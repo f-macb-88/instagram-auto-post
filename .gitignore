@@ -1,0 +1,14 @@
+# 認証情報は絶対にコミットしない
+*.json
+service_account*.json
+.env
+*.token
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
