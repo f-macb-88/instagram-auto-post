@@ -16,6 +16,7 @@ import json
 import os
 import sys
 import time
+import unicodedata
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -77,24 +78,31 @@ def parse_scheduled_time(raw):
 
 
 def find_drive_file(drive, name):
-    """ドライブの対象フォルダ内からファイル名で検索し file_id を返す。"""
-    q = (
-        f"'{DRIVE_FOLDER_ID}' in parents and name = '{name}' "
-        f"and trashed = false"
-    )
-    res = drive.files().list(
-        q=q,
-        fields="files(id, name, mimeType)",
-        pageSize=10,
-        supportsAllDrives=True,
-        includeItemsFromAllDrives=True,
-    ).execute()
-    files = res.get("files", [])
-    if not files:
-        raise FileNotFoundError(f"ドライブにファイルが見つかりません: '{name}'")
-    if len(files) > 1:
-        log(f"  警告: '{name}' が複数見つかりました。先頭を使用します。")
-    return files[0]["id"]
+    """ドライブの対象フォルダ内からファイル名で検索し file_id を返す。
+
+    Mac由来のファイル名は濁点などがNFD（分解形）で保存されることがあり、
+    スプレッドシート側のNFC（合成形）と単純比較すると一致しない。
+    そのためフォルダ内の全ファイルを列挙し、NFCに正規化して比較する。
+    """
+    target = unicodedata.normalize("NFC", name)
+    q = f"'{DRIVE_FOLDER_ID}' in parents and trashed = false"
+    page_token = None
+    while True:
+        res = drive.files().list(
+            q=q,
+            fields="nextPageToken, files(id, name)",
+            pageSize=1000,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+            pageToken=page_token,
+        ).execute()
+        for f in res.get("files", []):
+            if unicodedata.normalize("NFC", f["name"]) == target:
+                return f["id"]
+        page_token = res.get("nextPageToken")
+        if not page_token:
+            break
+    raise FileNotFoundError(f"ドライブにファイルが見つかりません: '{name}'")
 
 
 def download_drive_file(drive, file_id, dest_path):
