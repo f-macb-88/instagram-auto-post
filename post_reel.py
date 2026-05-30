@@ -83,7 +83,11 @@ def find_drive_file(drive, name):
         f"and trashed = false"
     )
     res = drive.files().list(
-        q=q, fields="files(id, name, mimeType)", pageSize=10
+        q=q,
+        fields="files(id, name, mimeType)",
+        pageSize=10,
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
     ).execute()
     files = res.get("files", [])
     if not files:
