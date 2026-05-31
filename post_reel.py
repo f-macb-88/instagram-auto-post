@@ -35,6 +35,8 @@ SPREADSHEET_ID = os.environ["SPREADSHEET_ID"]
 DRIVE_FOLDER_ID = os.environ["DRIVE_FOLDER_ID"]
 SERVICE_ACCOUNT_JSON = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
 # CLOUDINARY_URL 環境変数は cloudinary ライブラリが自動で読む
+# Slack通知用（任意）。未設定なら通知をスキップする。
+SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 
 GRAPH = "https://graph.facebook.com/v21.0"
 JST = ZoneInfo("Asia/Tokyo")
@@ -56,6 +58,16 @@ SCOPES = [
 
 def log(msg):
     print(f"[{datetime.now(JST):%Y-%m-%d %H:%M:%S}] {msg}", flush=True)
+
+
+def notify_slack(text):
+    """Slack の Incoming Webhook にメッセージを送る。未設定・失敗時は黙って無視。"""
+    if not SLACK_WEBHOOK_URL:
+        return
+    try:
+        requests.post(SLACK_WEBHOOK_URL, json={"text": text}, timeout=30)
+    except Exception as e:
+        log(f"  Slack通知に失敗（無視）: {e}")
 
 
 def parse_scheduled_time(raw):
@@ -278,6 +290,12 @@ def main():
             if COL_ERROR in col_idx:
                 ws.update_cell(sheet_row, col_idx[COL_ERROR], "")
             posted += 1
+
+            notify_slack(
+                f"✅ Instagramにリールを投稿しました\n"
+                f"動画: {video_name}\n"
+                f"{permalink}"
+            )
 
         except Exception as e:
             log(f"  失敗: {e}")
