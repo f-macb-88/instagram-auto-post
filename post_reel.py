@@ -36,7 +36,8 @@ from googleapiclient.http import MediaIoBaseDownload
 
 # ---- 設定（環境変数から）---------------------------------------------------
 # シートとサービスアカウントは全アカウント共通。main() の中で必須チェックする。
-SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "")
+SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "")  # らぶ64のシート（アカウント列が空欄なら love64）
+SPREADSHEET_ID_JOBTYPE64 = os.environ.get("SPREADSHEET_ID_JOBTYPE64", "")  # ジョブタイプ64のシート（空欄なら jobtype64）
 SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
 # CLOUDINARY_URL 環境変数は cloudinary ライブラリが自動で読む
 # Slack通知用（任意）。未設定なら通知をスキップする。
@@ -697,29 +698,9 @@ def check_sending_row(ws, col_idx, sheet_row, row, accounts, now):
     log(f"行{sheet_row}: [{account}] まだ送信中（{status}）")
 
 
-def main():
-    for name, value in (
-        ("SPREADSHEET_ID", SPREADSHEET_ID),
-        ("GOOGLE_SERVICE_ACCOUNT_JSON", SERVICE_ACCOUNT_JSON),
-    ):
-        if not value:
-            log(f"エラー: 環境変数 {name} が未設定です。")
-            sys.exit(1)
-
-    accounts = load_accounts()
-    for name, cfg in accounts.items():
-        ready = bool(cfg["ig_user_id"] and cfg["access_token"] and cfg["drive_folder_id"])
-        log(f"アカウント {name}: {'設定あり' if ready else '未設定（この行はエラーにする）'}")
-        missing = missing_tiktok_settings(cfg)
-        log(f"  TikTok（Buffer）{name}: {'設定あり' if not missing else '未設定（' + '・'.join(missing) + '）'}")
-
-    creds = service_account.Credentials.from_service_account_info(
-        json.loads(SERVICE_ACCOUNT_JSON), scopes=SCOPES
-    )
-    gc = gspread.authorize(creds)
-    drive = build("drive", "v3", credentials=creds, cache_discovery=False)
-
-    ws = gc.open_by_key(SPREADSHEET_ID).sheet1
+def process_sheet(gc, drive, sheet_id, default_account, accounts, now):
+    """1枚のシートの行を処理し、今回投稿した数を返す。"""
+    ws = gc.open_by_key(sheet_id).sheet1
     rows = ws.get_all_records()  # 1行目をヘッダーとした辞書のリスト
     header = ws.row_values(1)
     # 項目名 → 1始まりの列番号。列は必ずこの表で引く（列文字の直書きはしない）
@@ -727,15 +708,16 @@ def main():
 
     for required in (COL_SCHEDULED, COL_VIDEO, COL_CAPTION, COL_STATUS):
         if required not in col_idx:
-            log(f"エラー: 必須列 '{required}' がスプレッドシートにありません。")
-            sys.exit(1)
+            log(f"エラー: 必須列 '{required}' がスプレッドシート（{default_account}）にありません。")
+            return 0
 
-    now = datetime.now(JST)
     log(f"現在時刻(JST): {now:%Y-%m-%d %H:%M}　全{len(rows)}行をチェック")
 
     posted = 0
     for i, row in enumerate(rows):
         sheet_row = i + 2  # ヘッダー分+1、0始まり+1
+        if not _normalize_cell(row.get(COL_ACCOUNT, "")):
+            row[COL_ACCOUNT] = default_account  # アカウント列が無い・空欄ならシートの既定
 
         status = str(row.get(COL_STATUS, "")).strip()
         if status == STATUS_SENDING:
@@ -813,6 +795,46 @@ def main():
         except Exception as e:
             log(f"  失敗: {redact(e)}")
             mark_error(ws, col_idx, sheet_row, e)
+
+    return posted
+
+
+def main():
+    for name, value in (
+        ("SPREADSHEET_ID", SPREADSHEET_ID),
+        ("GOOGLE_SERVICE_ACCOUNT_JSON", SERVICE_ACCOUNT_JSON),
+    ):
+        if not value:
+            log(f"エラー: 環境変数 {name} が未設定です。")
+            sys.exit(1)
+
+    accounts = load_accounts()
+    for name, cfg in accounts.items():
+        ready = bool(cfg["ig_user_id"] and cfg["access_token"] and cfg["drive_folder_id"])
+        log(f"アカウント {name}: {'設定あり' if ready else '未設定（この行はエラーにする）'}")
+        missing = missing_tiktok_settings(cfg)
+        log(f"  TikTok（Buffer）{name}: {'設定あり' if not missing else '未設定（' + '・'.join(missing) + '）'}")
+
+    creds = service_account.Credentials.from_service_account_info(
+        json.loads(SERVICE_ACCOUNT_JSON), scopes=SCOPES
+    )
+    gc = gspread.authorize(creds)
+    drive = build("drive", "v3", credentials=creds, cache_discovery=False)
+
+    now = datetime.now(JST)
+    posted = 0
+    sheets = [(SPREADSHEET_ID, "love64")]
+    if SPREADSHEET_ID_JOBTYPE64:
+        sheets.append((SPREADSHEET_ID_JOBTYPE64, "jobtype64"))
+    for sheet_id, default_account in sheets:
+        log(f"--- シート（既定のアカウント {default_account}）")
+        try:
+            posted += process_sheet(gc, drive, sheet_id, default_account, accounts, now)
+        except SystemExit:
+            raise
+        except Exception as e:
+            # 片方のシートが開けなくても、もう片方の投稿は続ける
+            log(f"エラー: シート（{default_account}）を処理できません: {redact(e)}")
 
     log(f"完了。今回の投稿数: {posted}")
 

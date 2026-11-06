@@ -143,3 +143,11 @@ APP_ID=... APP_SECRET=... SYSTEM_USER_TOKEN=... python3 get_page_token.py
 システムユーザーが管理する全ページが一覧で出る。
 ページ名を確かめ、有効期限が「無期限」のページトークンを該当アカウントの Secret
 （love64 は `IG_ACCESS_TOKEN`、jobtype64 は `IG_ACCESS_TOKEN_JOBTYPE64`）に登録する。
+
+## シートを2枚に分ける（2026-11-06）
+
+- らぶ64のシート（Secret `SPREADSHEET_ID`）：「アカウント」列が無い・空欄の行は love64 として投稿
+- ジョブタイプ64のシート（Secret `SPREADSHEET_ID_JOBTYPE64`）：「アカウント」列が無い・空欄の行は jobtype64 として投稿
+- 1回の実行で2枚を順に処理する。片方のシートが開けなくても、もう片方は止まらない
+- 5分ごとの起動（Apps Script のトリガー）はらぶ64のシートにある1本だけでよい。ジョブタイプ64のシートにトリガーは作らない
+- ジョブタイプ64のシートも、サービスアカウントに「編集者」で共有する
