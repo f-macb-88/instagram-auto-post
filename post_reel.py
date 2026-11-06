@@ -182,6 +182,11 @@ def parse_scheduled_time(raw):
     raise ValueError(f"投稿予定時刻の書式を認識できません: '{raw}'（例: 2026-06-01 19:00）")
 
 
+def norm_header(name):
+    """見出しの表記ゆれをそろえる：前後の空白を除き、改行・空白・全角＿の並びを「_」1つにする"""
+    return re.sub(r"[\s_＿]+", "_", str(name or "").strip())
+
+
 def _normalize_cell(value):
     """セルの値を比較用に整える（全角→半角・前後の空白除去・小文字化）。"""
     return unicodedata.normalize("NFKC", str(value or "")).strip().lower()
@@ -729,8 +734,9 @@ def process_sheet(gc, drive, sheet_id, default_account, accounts, now, allowed_a
     アカウント列にこれ以外の値がある行は投稿せずエラーにする（別アカウントへの投稿を防ぐ）。
     """
     ws = gc.open_by_key(sheet_id).sheet1
-    rows = ws.get_all_records()  # 1行目をヘッダーとした辞書のリスト
-    header = ws.row_values(1)
+    # 見出しの「改行・空白・＿」は「_」とみなす（渕山さんが見出しを2行にしても列を見失わない）
+    rows = [{norm_header(k): v for k, v in r.items()} for r in ws.get_all_records()]
+    header = [norm_header(h) for h in ws.row_values(1)]
     # 項目名 → 1始まりの列番号。列は必ずこの表で引く（列文字の直書きはしない）
     col_idx = {name: i + 1 for i, name in enumerate(header)}
 
