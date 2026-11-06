@@ -18,6 +18,7 @@ GitHub Actions から定期実行される想定。
 import io
 import json
 import os
+import re
 import sys
 import time
 import unicodedata
@@ -289,11 +290,29 @@ def get_permalink(access_token, media_id):
     return r.json().get("permalink", "")
 
 
+def safe_tmp_path(name):
+    """シートに書かれたファイル名から、/tmp の中だけを指す保存先を作る（../ や / を含む名前で外へ書かせない）"""
+    base = os.path.basename(str(name).replace("\\", "/")).strip()
+    if not base or base in (".", ".."):
+        raise ValueError(f"ファイル名が不正です: {name!r}")
+    return os.path.join("/tmp", base)
+
+
+def redact(text):
+    """エラー文から鍵・トークンを伏せる（シートとログに書く前に必ず通す）"""
+    text = str(text)
+    for k in ("IG_ACCESS_TOKEN", "IG_ACCESS_TOKEN_JOBTYPE64", "CLOUDINARY_URL"):
+        v = os.environ.get(k)
+        if v:
+            text = text.replace(v, "***")
+    return re.sub(r"(access_token|api_key|api_secret|token)=([^&\s'\"]+)", r"\1=***", text)
+
+
 def mark_error(ws, col_idx, sheet_row, message):
     """行のステータスを「エラー」にし、エラー列があれば理由を書く。"""
     ws.update_cell(sheet_row, col_idx[COL_STATUS], "エラー")
     if COL_ERROR in col_idx:
-        ws.update_cell(sheet_row, col_idx[COL_ERROR], str(message)[:500])
+        ws.update_cell(sheet_row, col_idx[COL_ERROR], redact(message)[:500])
 
 
 def post_instagram_reel(drive, cfg, video_name, cover_name, caption):
@@ -305,14 +324,14 @@ def post_instagram_reel(drive, cfg, video_name, cover_name, caption):
     try:
         # 1) ドライブから取得
         video_id = find_drive_file(drive, folder_id, video_name)
-        video_path = f"/tmp/{video_name}"
+        video_path = safe_tmp_path(video_name)
         download_drive_file(drive, video_id, video_path)
         log("  動画ダウンロード完了")
 
         cover_url = ""
         if cover_name:
             cover_id = find_drive_file(drive, folder_id, cover_name)
-            cover_path = f"/tmp/{cover_name}"
+            cover_path = safe_tmp_path(cover_name)
             download_drive_file(drive, cover_id, cover_path)
             cover_url, cpid, crt = upload_to_cloudinary(cover_path, "image")
             uploaded.append((cpid, crt))
@@ -422,7 +441,7 @@ def main():
             )
 
         except Exception as e:
-            log(f"  失敗: {e}")
+            log(f"  失敗: {redact(e)}")
             mark_error(ws, col_idx, sheet_row, e)
 
     log(f"完了。今回の投稿数: {posted}")
