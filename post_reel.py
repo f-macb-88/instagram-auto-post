@@ -114,7 +114,9 @@ COL_AI = "AI生成"  # 任意の列（TikTok）。はい/true/1 などなら Tik
 STATUS_SENDING = "送信中"  # TikTok：Buffer へ渡したが、公開の完了をまだ確認できていない
 
 # ---- ジョブタイプ64の新形式（1行＝1本の動画をインスタと TikTok の両方へ）の列ヘッダー
-COL_CONFIRMED = "確認済み"  # チェックボックス。TRUE の行だけ投稿する
+COL_IG_CONFIRMED = "インスタ_確認済み"  # チェックボックス。TRUE ならインスタに投稿する
+COL_TT_CONFIRMED = "TikTok_確認済み"  # チェックボックス。TRUE なら TikTok に投稿する
+# 「動画リンク」列は人が見るだけ。スクリプトは読まない
 COL_IG_CAPTION = "インスタ_キャプション"
 COL_TT_CAPTION = "TikTok_キャプション"
 COL_IG_STATUS = "インスタ_ステータス"  # この見出しがあるシートを新形式とみなす
@@ -846,12 +848,12 @@ def process_sheet(gc, drive, sheet_id, default_account, accounts, now, allowed_a
 # 1行＝1本の動画。インスタと TikTok は媒体ごとに独立して進める（片方が失敗してももう片方は投稿する）。
 # 各媒体のステータスが空欄なら投稿、「投稿済」「エラー」「投稿しない」など何か入っていればその媒体は飛ばす。
 
-JT64_REQUIRED = (COL_VIDEO, COL_CONFIRMED, COL_SCHEDULED, COL_IG_CAPTION, COL_TT_CAPTION, COL_IG_STATUS, COL_TT_STATUS)
+JT64_REQUIRED = (COL_VIDEO, COL_IG_CONFIRMED, COL_TT_CONFIRMED, COL_SCHEDULED, COL_IG_CAPTION, COL_TT_CAPTION, COL_IG_STATUS, COL_TT_STATUS)
 
 
 def is_jt64_format(header):
-    """見出しに「インスタ_ステータス」があれば新形式。"""
-    return COL_IG_STATUS in header
+    """見出しに「インスタ_確認済み」か「インスタ_ステータス」があれば新形式。"""
+    return COL_IG_CONFIRMED in header or COL_IG_STATUS in header
 
 
 def ig_ready(cfg):
@@ -1050,15 +1052,14 @@ def process_jt64_sheet(ws, rows, col_idx, drive, accounts, now):
         ig_status = str(row.get(COL_IG_STATUS, "")).strip()
         tt_status = str(row.get(COL_TT_STATUS, "")).strip()
 
-        # 送信中の TikTok は、確認済みの外し忘れ等に関係なく公開状態を確かめる
+        # 送信中の TikTok は、TikTok_確認済みのチェックを外しても公開状態を確かめる
         if tt_status == STATUS_SENDING:
             jt64_check_sending(r, cfg, now)
 
-        if not is_truthy_cell(row.get(COL_CONFIRMED, "")):
-            continue  # 確認済みでない行は何もしない（エラーも書かない）
-
-        ig_todo = not ig_status
-        tt_todo = not tt_status
+        # 媒体ごとに「確認済み」のチェックがあり、ステータスが空欄なら投稿する
+        # チェックの無い媒体は何もしない（エラーも書かない）
+        ig_todo = not ig_status and is_truthy_cell(row.get(COL_IG_CONFIRMED, ""))
+        tt_todo = not tt_status and is_truthy_cell(row.get(COL_TT_CONFIRMED, ""))
         if not (ig_todo or tt_todo):
             continue
 
