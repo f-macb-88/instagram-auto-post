@@ -1101,7 +1101,7 @@ def main():
     accounts = load_accounts()
     for name, cfg in accounts.items():
         ready = bool(cfg["ig_user_id"] and cfg["access_token"] and cfg["drive_folder_id"])
-        log(f"アカウント {name}: {'設定あり' if ready else '未設定（この行はエラーにする）'}")
+        log(f"アカウント {name}: {'設定あり' if ready else '未設定（らぶ64形式の行はエラー、ジョブタイプ64のシートのインスタ分は鍵が入るまで保留）'}")
         missing = missing_tiktok_settings(cfg)
         log(f"  TikTok（Buffer）{name}: {'設定あり' if not missing else '未設定（' + '・'.join(missing) + '）'}")
 
