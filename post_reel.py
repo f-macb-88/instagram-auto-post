@@ -67,7 +67,7 @@ def load_accounts(env=None):
     env = os.environ if env is None else env
     love64_folder = env.get("DRIVE_FOLDER_ID", "")
     # Buffer の API キーはアカウント（Buffer のログイン）単位で1つ。全アカウント共通
-    buffer_key = env.get("BUFFER_API_KEY", "")
+    buffer_key = env.get("BUFFER_API_KEY", "").strip()  # 貼り付けで混ざった空白・改行を除く
     return {
         "love64": {
             "ig_user_id": env.get("IG_USER_ID", ""),
