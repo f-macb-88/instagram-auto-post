@@ -1195,7 +1195,6 @@ def process_jt64_sheet(ws, rows, col_idx, drive, accounts, now):
 
 def main():
     for name, value in (
-        ("SPREADSHEET_ID", SPREADSHEET_ID),
         ("GOOGLE_SERVICE_ACCOUNT_JSON", SERVICE_ACCOUNT_JSON),
     ):
         if not value:
@@ -1217,7 +1216,13 @@ def main():
 
     now = datetime.now(JST)
     posted = 0
-    sheets = [(SPREADSHEET_ID, "love64")]
+    sheets = []
+    # らぶ64は花木さんに引き継いだため、既定では処理しない（2026-11-06 渕山さん指示）。
+    # 再開するときは Actions の変数か env で LOVE64_ENABLED=1 にする
+    if os.environ.get("LOVE64_ENABLED") == "1" and SPREADSHEET_ID:
+        sheets.append((SPREADSHEET_ID, "love64"))
+    else:
+        log("らぶ64のシートは処理しません（LOVE64_ENABLED が 1 ではない）")
     if SPREADSHEET_ID_JOBTYPE64:
         sheets.append((SPREADSHEET_ID_JOBTYPE64, "jobtype64"))
     for sheet_id, default_account in sheets:
