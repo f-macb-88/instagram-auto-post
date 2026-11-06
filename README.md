@@ -41,7 +41,7 @@ Instagramへリールを自動投稿する仕組み。GitHub Actions で無人�
 | 理由（エラー列） | 条件 |
 |---|---|
 | `未設定のアカウント（jobtype64）` | そのアカウントの Secrets（IG ユーザーID・トークン）が未登録 |
-| `TikTok は未対応` | 媒体が `tiktok`（投稿方式が未決定のため。後で Buffer API 等を足す） |
+| `未設定（TikTok jobtype64）：…` | 媒体が `tiktok` で、Buffer の API キーかそのアカウントのチャンネルIDが未登録（足りない Secret の名前が続く） |
 | `ジョブタイプ64のキャプションに「MBTI」が含まれています（使用禁止）` | アカウントが `jobtype64` で、キャプションに MBTI（大文字小文字問わず）を含む |
 | `不明なアカウント（…）` / `不明な媒体（…）` | 上の表にない値が入っている |
 
@@ -61,6 +61,59 @@ Instagramへリールを自動投稿する仕組み。GitHub Actions で無人�
 | `IG_USER_ID_JOBTYPE64` | jobtype64 の InstagramビジネスアカウントID（17841436543196844） |
 | `IG_ACCESS_TOKEN_JOBTYPE64` | 「JOB TYPE 64」ページの無期限ページアクセストークン |
 | `DRIVE_FOLDER_ID_JOBTYPE64` | jobtype64 の素材フォルダのID（任意。未登録なら `DRIVE_FOLDER_ID` のフォルダから探す） |
+| `BUFFER_API_KEY` | Buffer の API キー（TikTok 用・全アカウント共通。Buffer の Settings → API で作る） |
+| `BUFFER_CHANNEL_TIKTOK_JOBTYPE64` | jobtype64 の TikTok を Buffer につないだチャンネルのID（`list_buffer_channels.py` で調べる） |
+| `BUFFER_CHANNEL_TIKTOK_LOVE64` | love64 の TikTok のチャンネルID（使うときだけ） |
+
+## TikTok（Buffer 経由）
+
+「媒体」が `tiktok` の行は、TikTok を直接ではなく **Buffer の公式 API** を通して投稿する（Buffer 無料プラン）。
+
+1. ドライブから動画を取得 → Cloudinary の `tiktok/` フォルダへアップして公開URL化
+2. Buffer の `createPost`（今すぐ投稿・自動公開）に動画URLとキャプションを渡す
+3. 最大10分、Buffer の状態を見て待つ
+   - 公開が終わった → 「投稿済」・投稿URL（Buffer が返したとき）を書き、Cloudinary の動画を消す
+   - 10分で終わらない → 「送信中」にして「BufferID」列に Buffer の投稿IDを書く。**動画は消さない**（Buffer が公開するときに取りに来るため）
+4. 次回以降の実行（5分ごと）で「送信中」の行を確かめる
+   - 公開済み → 「投稿済」・投稿URL・Cloudinary の動画を削除・Slack 通知
+   - Buffer 側で失敗 → 「エラー」と理由・Cloudinary の動画を削除
+   - 予定時刻から24時間たっても送信中 → 「エラー」（Buffer の画面で確認する）
+
+### 追加する列（任意）
+
+| 列 | 内容 |
+|---|---|
+| `BufferID` | 送信中の行に自動で書く。**この列が無いと「送信中」の行を自動で確認できない**ので、TikTok を使うなら足しておく |
+| `AI生成` | `はい`（true・1・○も可）なら TikTok に「AI生成コンテンツ」と表示する。空欄なら表示しない |
+
+「カバー画像ファイル名」は TikTok では使わない（Buffer 無料プランは動画カバーの指定ができないため）。
+
+### 投稿せずに「エラー」にする TikTok の行
+
+| 理由 | 条件 |
+|---|---|
+| `未設定（TikTok jobtype64）：…` | `BUFFER_API_KEY` かチャンネルIDが未登録 |
+| `ジョブタイプ64のキャプションに「MBTI」が含まれています（使用禁止）` | Instagram と同じ検査 |
+| `TikTok のキャプションが長すぎます` | 2,200字超（動画付き TikTok の上限） |
+| `TikTok のハッシュタグが多すぎます` | 6個以上（Buffer 経由の TikTok は1投稿5個まで） |
+
+### Buffer 側の条件（2026-11-06 時点の公式ドキュメント）
+
+- TikTok はビジネスアカウントにしてから Buffer につなぐ。Buffer の「Enable Notifications by default」はオフにする（オンだと自動公開ではなく通知になる）
+- 動画：3秒〜10分・1GB以下・MP4/MOV/WEBM・縦横とも360px以上
+- 無料プラン：チャンネル3つまで・予約はチャンネルごと10件まで・API は24時間600回／15分150回
+- 音楽の追加はできない（API の制約）
+
+### チャンネルIDの調べ方
+
+```
+read -s BUFFER_API_KEY && export BUFFER_API_KEY
+python3 list_buffer_channels.py
+gh secret set BUFFER_API_KEY
+gh secret set BUFFER_CHANNEL_TIKTOK_JOBTYPE64
+```
+
+`service` が `tiktok` の行の ID を登録する。API キーの値は表示されない。
 
 ## jobtype64 を追加する手順
 
