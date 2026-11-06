@@ -11,6 +11,10 @@ Instagram Graph API でリールを投稿し、結果をスプレッドシート
 投稿先は行ごとに「アカウント」列（love64／jobtype64。空欄は love64）と
 「媒体」列（instagram／tiktok。空欄は instagram）で切り替える。
 どちらの列も無いシートでは、従来どおり全行を love64 の Instagram に投稿する。
+各シートは自分のアカウントにしか投稿できない（らぶ64のシートは love64、ジョブタイプ64のシートは jobtype64）。
+
+ジョブタイプ64のシートで見出しに「インスタ_ステータス」がある場合は新形式として扱う。
+新形式は1行＝1本の動画で、インスタと TikTok の両方へ媒体ごとに独立して投稿する（アカウントは jobtype64 固定）。
 
 GitHub Actions から定期実行される想定。
 設定値はすべて環境変数(GitHub Secrets)から読み込む。
@@ -108,6 +112,24 @@ COL_BUFFER_ID = "BufferID"  # 任意の列（TikTok）。送信中の行を次�
 COL_AI = "AI生成"  # 任意の列（TikTok）。はい/true/1 などなら TikTok に「AI生成」と表示する
 
 STATUS_SENDING = "送信中"  # TikTok：Buffer へ渡したが、公開の完了をまだ確認できていない
+
+# ---- ジョブタイプ64の新形式（1行＝1本の動画をインスタと TikTok の両方へ）の列ヘッダー
+COL_CONFIRMED = "確認済み"  # チェックボックス。TRUE の行だけ投稿する
+COL_IG_CAPTION = "インスタ_キャプション"
+COL_TT_CAPTION = "TikTok_キャプション"
+COL_IG_STATUS = "インスタ_ステータス"  # この見出しがあるシートを新形式とみなす
+COL_IG_URL = "インスタ_投稿URL"
+COL_TT_STATUS = "TikTok_ステータス"
+COL_TT_URL = "TikTok_投稿URL"
+COL_ADDED = "追加日時"  # 予定時刻が空欄の送信中の行で、あきらめる時刻の基準に使う
+JT64_ACCOUNT = "jobtype64"  # 新形式はアカウント列を見ずにこのアカウントへ固定
+LABEL_IG = "インスタ"
+LABEL_TT = "TikTok"
+ERROR_MAX = 500  # エラー列に書く上限の文字数
+
+# Instagram の上限（Graph API：キャプション2,200字・ハッシュタグ30個まで）
+IG_CAPTION_MAX = 2200
+IG_HASHTAG_MAX = 30
 
 # TikTok（Buffer 経由）の上限。出典: developers.buffer.com/guides/character-limits.md と
 # Buffer ヘルプ「Using TikTok with Buffer」（動画付きは2,200字・ハッシュタグは5個まで）
@@ -698,13 +720,23 @@ def check_sending_row(ws, col_idx, sheet_row, row, accounts, now):
     log(f"行{sheet_row}: [{account}] まだ送信中（{status}）")
 
 
-def process_sheet(gc, drive, sheet_id, default_account, accounts, now):
-    """1枚のシートの行を処理し、今回投稿した数を返す。"""
+def process_sheet(gc, drive, sheet_id, default_account, accounts, now, allowed_accounts=None):
+    """1枚のシートの行を処理し、今回投稿した数を返す。
+
+    allowed_accounts: このシートで投稿してよいアカウント名の組。None なら制限しない。
+    アカウント列にこれ以外の値がある行は投稿せずエラーにする（別アカウントへの投稿を防ぐ）。
+    """
     ws = gc.open_by_key(sheet_id).sheet1
     rows = ws.get_all_records()  # 1行目をヘッダーとした辞書のリスト
     header = ws.row_values(1)
     # 項目名 → 1始まりの列番号。列は必ずこの表で引く（列文字の直書きはしない）
     col_idx = {name: i + 1 for i, name in enumerate(header)}
+
+    if is_jt64_format(header):
+        if allowed_accounts is not None and JT64_ACCOUNT not in allowed_accounts:
+            log(f"エラー: シート（{default_account}）は新形式ですが、このシートでは {JT64_ACCOUNT} に投稿できません。")
+            return 0
+        return process_jt64_sheet(ws, rows, col_idx, drive, accounts, now)
 
     for required in (COL_SCHEDULED, COL_VIDEO, COL_CAPTION, COL_STATUS):
         if required not in col_idx:
@@ -719,8 +751,13 @@ def process_sheet(gc, drive, sheet_id, default_account, accounts, now):
         if not _normalize_cell(row.get(COL_ACCOUNT, "")):
             row[COL_ACCOUNT] = default_account  # アカウント列が無い・空欄ならシートの既定
 
+        allowed = allowed_accounts is None or resolve_account(row) in allowed_accounts
+
         status = str(row.get(COL_STATUS, "")).strip()
         if status == STATUS_SENDING:
+            if not allowed:
+                log(f"行{sheet_row}: 送信中ですが、このシートでは指定できないアカウント（{resolve_account(row)}）のため確認しません")
+                continue
             check_sending_row(ws, col_idx, sheet_row, row, accounts, now)
             continue
         if status:
@@ -735,6 +772,12 @@ def process_sheet(gc, drive, sheet_id, default_account, accounts, now):
 
         if scheduled is None or scheduled > now:
             continue  # 時刻未到来 or 空欄
+
+        if not allowed:
+            msg = f"このシートでは指定できないアカウント（{resolve_account(row)}）"
+            log(f"行{sheet_row}: 投稿しません: {msg}")
+            mark_error(ws, col_idx, sheet_row, msg)
+            continue
 
         action, account, detail = check_row(row, accounts)
         if action == "error":
@@ -799,6 +842,252 @@ def process_sheet(gc, drive, sheet_id, default_account, accounts, now):
     return posted
 
 
+# ---- ジョブタイプ64の新形式 ------------------------------------------------------
+# 1行＝1本の動画。インスタと TikTok は媒体ごとに独立して進める（片方が失敗してももう片方は投稿する）。
+# 各媒体のステータスが空欄なら投稿、「投稿済」「エラー」「投稿しない」など何か入っていればその媒体は飛ばす。
+
+JT64_REQUIRED = (COL_VIDEO, COL_CONFIRMED, COL_SCHEDULED, COL_IG_CAPTION, COL_TT_CAPTION, COL_IG_STATUS, COL_TT_STATUS)
+
+
+def is_jt64_format(header):
+    """見出しに「インスタ_ステータス」があれば新形式。"""
+    return COL_IG_STATUS in header
+
+
+def ig_ready(cfg):
+    """jobtype64 の Instagram の鍵（ユーザーIDとトークン）がそろっているか。値は返さない。"""
+    return bool(cfg.get("ig_user_id") and cfg.get("access_token"))
+
+
+def check_caption(caption, col_name, max_len, max_tags):
+    """キャプションの事前検査。問題があれば理由の文、なければ None。"""
+    if not str(caption).strip():
+        return f"{col_name}が空です"
+    if contains_mbti(caption):
+        return "キャプションに「MBTI」が含まれています（使用禁止）"
+    n = utf16_len(caption)
+    if n > max_len:
+        return f"キャプションが長すぎます（{n}字・上限{max_len}字）"
+    tags = count_hashtags(caption)
+    if tags > max_tags:
+        return f"ハッシュタグが多すぎます（{tags}個・上限{max_tags}個）"
+    return None
+
+
+class Jt64Row:
+    """新形式の1行への書き込み。エラー列は媒体名を頭に付けて追記する（既存の文は消さない）。"""
+
+    def __init__(self, ws, col_idx, sheet_row, row):
+        self.ws, self.col_idx, self.sheet_row, self.row = ws, col_idx, sheet_row, row
+        self.error_text = str(row.get(COL_ERROR, "") or "")
+
+    def write(self, col_name, value):
+        if col_name in self.col_idx:
+            self.ws.update_cell(self.sheet_row, self.col_idx[col_name], value)
+
+    def append_error(self, label, message):
+        if COL_ERROR not in self.col_idx:
+            return
+        line = f"[{label}] {redact(message)}"
+        text = f"{self.error_text}\n{line}" if self.error_text else line
+        self.error_text = text[:ERROR_MAX]
+        self.write(COL_ERROR, self.error_text)
+
+    def fail(self, status_col, label, message):
+        """その媒体のステータスを「エラー」にし、エラー列に理由を追記する。"""
+        log(f"行{self.sheet_row}: [{JT64_ACCOUNT}][{label}] 失敗: {redact(message)}")
+        self.write(status_col, "エラー")
+        self.append_error(label, message)
+
+
+def jt64_post_instagram(r, drive, cfg, video_name):
+    """新形式の行をインスタに投稿する。投稿できたら True。"""
+    caption = str(r.row.get(COL_IG_CAPTION, ""))
+    cover_name = str(r.row.get(COL_COVER, "")).strip()
+    try:
+        if not video_name:
+            raise ValueError("動画ファイル名が空です")
+        if not cfg.get("drive_folder_id"):
+            raise ValueError("未設定（DRIVE_FOLDER_ID）")
+        problem = check_caption(caption, COL_IG_CAPTION, IG_CAPTION_MAX, IG_HASHTAG_MAX)
+        if problem:
+            raise ValueError(problem)
+        log(f"行{r.sheet_row}: [{JT64_ACCOUNT}][{LABEL_IG}] 投稿開始（動画 {video_name}）")
+        permalink = post_instagram_reel(drive, cfg, video_name, cover_name, caption)
+    except Exception as e:
+        r.fail(COL_IG_STATUS, LABEL_IG, e)
+        return False
+
+    log(f"  [{LABEL_IG}] 公開完了: {permalink}")
+    r.write(COL_IG_STATUS, "投稿済")
+    r.write(COL_IG_URL, permalink)
+    notify_slack(
+        f"✅ Instagram（{JT64_ACCOUNT}）にリールを投稿しました\n"
+        f"動画: {video_name}\n"
+        f"{permalink}"
+    )
+    return True
+
+
+def jt64_write_tiktok_sent(r, video_name, url):
+    r.write(COL_TT_STATUS, "投稿済")
+    r.write(COL_TT_URL, url)
+    notify_slack(
+        f"✅ TikTok（{JT64_ACCOUNT}）に動画を投稿しました\n"
+        f"動画: {video_name}\n"
+        f"{url or '（URLは Buffer の画面で確認）'}"
+    )
+
+
+def jt64_post_tiktok(r, drive, cfg, video_name):
+    """新形式の行を Buffer 経由で TikTok に投稿する。公開まで終わったら True。"""
+    caption = str(r.row.get(COL_TT_CAPTION, ""))
+    try:
+        if not video_name:
+            raise ValueError("動画ファイル名が空です")
+        missing = missing_tiktok_settings(cfg)
+        if missing:
+            raise ValueError(f"未設定（TikTok {JT64_ACCOUNT}）：{'・'.join(missing)}")
+        problem = check_caption(caption, COL_TT_CAPTION, TIKTOK_CAPTION_MAX, TIKTOK_HASHTAG_MAX)
+        if problem:
+            raise ValueError(problem)
+        log(f"行{r.sheet_row}: [{JT64_ACCOUNT}][{LABEL_TT}] 投稿開始（動画 {video_name}）")
+        result = post_tiktok_video(drive, cfg, video_name, caption, is_truthy_cell(r.row.get(COL_AI, "")))
+    except Exception as e:
+        r.fail(COL_TT_STATUS, LABEL_TT, e)
+        return False
+
+    if result["state"] == "sent":
+        log(f"  [{LABEL_TT}] 公開完了: {result['url']}")
+        jt64_write_tiktok_sent(r, video_name, result["url"])
+        return True
+
+    log(f"  [{LABEL_TT}] 送信中（次回の実行で確認）")
+    r.write(COL_TT_STATUS, STATUS_SENDING)
+    if COL_BUFFER_ID in r.col_idx:
+        # 先頭の ' は、数字だけのIDをシートが数値に変えないようにするため（シート上は表示されない）
+        r.write(COL_BUFFER_ID, "'" + result["post_id"])
+    else:
+        r.append_error(LABEL_TT, "「BufferID」列が無いため、次回の自動確認ができません。Buffer の画面で公開を確認してください")
+    return False
+
+
+def jt64_check_sending(r, cfg, now):
+    """前回「送信中」で終えた TikTok を Buffer で確かめて書き戻す（考え方は check_sending_row と同じ）。"""
+    tag = f"行{r.sheet_row}: [{JT64_ACCOUNT}][{LABEL_TT}]"
+    if COL_BUFFER_ID not in r.col_idx:
+        log(f"{tag} 送信中（BufferID 列が無いため確認できません）")
+        return
+    post_id = str(r.ws.cell(r.sheet_row, r.col_idx[COL_BUFFER_ID]).value or "").strip().lstrip("'")
+    if not post_id:
+        log(f"{tag} 送信中（BufferID が空のため確認できません）")
+        return
+    if not cfg.get("buffer_api_key"):
+        log(f"{tag} 送信中のまま（BUFFER_API_KEY 未設定）")
+        return
+
+    try:
+        post = buffer_get_post(cfg["buffer_api_key"], post_id)
+    except BufferNotFound as e:
+        r.fail(COL_TT_STATUS, LABEL_TT, f"{e}（Buffer の画面で消された可能性があります）")
+        delete_cloudinary_by_tag(post_id)
+        return
+    except Exception as e:
+        log(f"{tag} Buffer の状態確認に失敗（次回また確認）: {redact(e)}")
+        return
+
+    status = post.get("status")
+    video_name = str(r.row.get(COL_VIDEO, "")).strip()
+    if status == "sent":
+        log(f"{tag} 公開完了: {post.get('externalLink') or ''}")
+        jt64_write_tiktok_sent(r, video_name, post.get("externalLink") or "")
+        delete_cloudinary_by_tag(post_id)
+        return
+    if status == "error":
+        r.fail(COL_TT_STATUS, LABEL_TT, buffer_error_message(post))
+        delete_cloudinary_by_tag(post_id)
+        return
+    if status in ("draft", "needs_approval"):
+        r.fail(
+            COL_TT_STATUS, LABEL_TT,
+            f"Buffer 側で{'下書き' if status == 'draft' else '承認待ち'}になっています。"
+            "Buffer の画面で確認してください（動画は Cloudinary に残しています）",
+        )
+        return
+
+    # sending / scheduled：まだ公開待ち。予定時刻（空欄なら追加日時）から長く過ぎていたらあきらめる
+    since = None
+    for col in (COL_SCHEDULED, COL_ADDED):
+        try:
+            since = parse_scheduled_time(r.row.get(col, ""))
+        except ValueError:
+            since = None
+        if since:
+            break
+    if since and (now - since).total_seconds() > BUFFER_GIVE_UP_SEC:
+        r.fail(
+            COL_TT_STATUS, LABEL_TT,
+            f"予定時刻から24時間たっても Buffer で送信が終わりません（{status}）。Buffer の画面で確認してください",
+        )
+        return
+    log(f"{tag} まだ送信中（{status}）")
+
+
+def process_jt64_sheet(ws, rows, col_idx, drive, accounts, now):
+    """新形式（ジョブタイプ64）のシートを処理し、今回投稿した数（媒体ごとに数える）を返す。"""
+    missing = [c for c in JT64_REQUIRED if c not in col_idx]
+    if missing:
+        log(f"エラー: 必須列 {'・'.join(missing)} がスプレッドシート（{JT64_ACCOUNT}・新形式）にありません。")
+        return 0
+
+    cfg = accounts.get(JT64_ACCOUNT) or {}
+    ig_ok = ig_ready(cfg)
+    log(f"現在時刻(JST): {now:%Y-%m-%d %H:%M}　全{len(rows)}行をチェック（{JT64_ACCOUNT}・新形式）")
+
+    posted = 0
+    for i, row in enumerate(rows):
+        r = Jt64Row(ws, col_idx, i + 2, row)
+        ig_status = str(row.get(COL_IG_STATUS, "")).strip()
+        tt_status = str(row.get(COL_TT_STATUS, "")).strip()
+
+        # 送信中の TikTok は、確認済みの外し忘れ等に関係なく公開状態を確かめる
+        if tt_status == STATUS_SENDING:
+            jt64_check_sending(r, cfg, now)
+
+        if not is_truthy_cell(row.get(COL_CONFIRMED, "")):
+            continue  # 確認済みでない行は何もしない（エラーも書かない）
+
+        ig_todo = not ig_status
+        tt_todo = not tt_status
+        if not (ig_todo or tt_todo):
+            continue
+
+        try:
+            scheduled = parse_scheduled_time(row.get(COL_SCHEDULED, ""))
+        except ValueError as e:
+            if ig_todo and ig_ok:
+                r.fail(COL_IG_STATUS, LABEL_IG, e)
+            if tt_todo:
+                r.fail(COL_TT_STATUS, LABEL_TT, e)
+            continue
+        if scheduled and scheduled > now:
+            continue  # 予定時刻がまだ（空欄なら今すぐ対象）
+
+        video_name = str(row.get(COL_VIDEO, "")).strip()
+
+        if ig_todo:
+            if not ig_ok:
+                # 鍵（IG_ACCESS_TOKEN_JOBTYPE64 など）が入れば自動で出るよう、ステータスは空欄のまま
+                log(f"行{r.sheet_row}: [{JT64_ACCOUNT}][{LABEL_IG}] 未設定のため保留")
+            elif jt64_post_instagram(r, drive, cfg, video_name):
+                posted += 1
+
+        if tt_todo and jt64_post_tiktok(r, drive, cfg, video_name):
+            posted += 1
+
+    return posted
+
+
 def main():
     for name, value in (
         ("SPREADSHEET_ID", SPREADSHEET_ID),
@@ -829,7 +1118,10 @@ def main():
     for sheet_id, default_account in sheets:
         log(f"--- シート（既定のアカウント {default_account}）")
         try:
-            posted += process_sheet(gc, drive, sheet_id, default_account, accounts, now)
+            # 各シートは自分のアカウントにしか投稿できない
+            posted += process_sheet(
+                gc, drive, sheet_id, default_account, accounts, now, allowed_accounts=(default_account,)
+            )
         except SystemExit:
             raise
         except Exception as e:
