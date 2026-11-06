@@ -15,6 +15,7 @@ Instagram Graph API でリールを投稿し、結果をスプレッドシート
 
 ジョブタイプ64のシートで見出しに「インスタ_ステータス」がある場合は新形式として扱う。
 新形式は1行＝1本の動画で、インスタと TikTok の両方へ媒体ごとに独立して投稿する（アカウントは jobtype64 固定）。
+投稿予定時刻は「インスタ_投稿予定時刻」「TikTok_投稿予定時刻」で媒体ごとに決められる（古い「投稿予定時刻」1列なら両媒体共通）。
 
 GitHub Actions から定期実行される想定。
 設定値はすべて環境変数(GitHub Secrets)から読み込む。
@@ -124,6 +125,9 @@ COL_IG_URL = "インスタ_投稿URL"
 COL_TT_STATUS = "TikTok_ステータス"
 COL_TT_URL = "TikTok_投稿URL"
 COL_ADDED = "追加日時"  # 予定時刻が空欄の送信中の行で、あきらめる時刻の基準に使う
+# 投稿予定時刻は媒体ごとに分けられる。この2列が無く「投稿予定時刻」1列だけのシートは、両媒体で同じ時刻を使う
+COL_IG_SCHEDULED = "インスタ_投稿予定時刻"
+COL_TT_SCHEDULED = "TikTok_投稿予定時刻"
 JT64_ACCOUNT = "jobtype64"  # 新形式はアカウント列を見ずにこのアカウントへ固定
 LABEL_IG = "インスタ"
 LABEL_TT = "TikTok"
@@ -854,7 +858,18 @@ def process_sheet(gc, drive, sheet_id, default_account, accounts, now, allowed_a
 # 1行＝1本の動画。インスタと TikTok は媒体ごとに独立して進める（片方が失敗してももう片方は投稿する）。
 # 各媒体のステータスが空欄なら投稿、「投稿済」「エラー」「投稿しない」など何か入っていればその媒体は飛ばす。
 
-JT64_REQUIRED = (COL_VIDEO, COL_IG_CONFIRMED, COL_TT_CONFIRMED, COL_SCHEDULED, COL_IG_CAPTION, COL_TT_CAPTION, COL_IG_STATUS, COL_TT_STATUS)
+# 投稿予定時刻の列は jt64_sched_cols() で別に確かめる（媒体別の2列か、共通の1列のどちらか）
+JT64_REQUIRED = (COL_VIDEO, COL_IG_CONFIRMED, COL_TT_CONFIRMED, COL_IG_CAPTION, COL_TT_CAPTION, COL_IG_STATUS, COL_TT_STATUS)
+
+
+def jt64_sched_cols(col_idx):
+    """(インスタの予定時刻の列名, TikTok の予定時刻の列名) を返す。
+    媒体別の列があればそれを、無ければ共通の「投稿予定時刻」を使う。どちらも無い媒体は None。"""
+    def pick(own):
+        if own in col_idx:
+            return own
+        return COL_SCHEDULED if COL_SCHEDULED in col_idx else None
+    return pick(COL_IG_SCHEDULED), pick(COL_TT_SCHEDULED)
 
 
 def is_jt64_format(header):
@@ -980,8 +995,9 @@ def jt64_post_tiktok(r, drive, cfg, video_name):
     return False
 
 
-def jt64_check_sending(r, cfg, now):
-    """前回「送信中」で終えた TikTok を Buffer で確かめて書き戻す（考え方は check_sending_row と同じ）。"""
+def jt64_check_sending(r, cfg, now, sched_col=COL_SCHEDULED):
+    """前回「送信中」で終えた TikTok を Buffer で確かめて書き戻す（考え方は check_sending_row と同じ）。
+    sched_col は TikTok の投稿予定時刻の列名（24時間であきらめる判定の起点）。"""
     tag = f"行{r.sheet_row}: [{JT64_ACCOUNT}][{LABEL_TT}]"
     if COL_BUFFER_ID not in r.col_idx:
         log(f"{tag} 送信中（BufferID 列が無いため確認できません）")
@@ -1023,9 +1039,9 @@ def jt64_check_sending(r, cfg, now):
         )
         return
 
-    # sending / scheduled：まだ公開待ち。予定時刻（空欄なら追加日時）から長く過ぎていたらあきらめる
+    # sending / scheduled：まだ公開待ち。TikTok の予定時刻（空欄なら追加日時）から長く過ぎていたらあきらめる
     since = None
-    for col in (COL_SCHEDULED, COL_ADDED):
+    for col in (sched_col, COL_ADDED):
         try:
             since = parse_scheduled_time(r.row.get(col, ""))
         except ValueError:
@@ -1067,38 +1083,57 @@ def next_free_slot(now, taken, slots):
     raise RuntimeError("空いている投稿枠が見つかりません")
 
 
+def _parse_or_none(value):
+    try:
+        return parse_scheduled_time(value)
+    except ValueError:
+        return None
+
+
 def jt64_assign_slots(ws, rows, col_idx, now, slots=None):
-    """チェックが入ったのに投稿予定時刻が空欄の行へ、次の空き枠を書き込む（シートの上の行から順に）。
-    渕山さんが自分で時刻を書いた行はそのまま。1つの枠に入るのは1本だけ。"""
+    """チェックが入ったのに投稿予定時刻が空欄の媒体へ、次の空き枠を書き込む（シートの上の行から順に）。
+    枠は媒体ごとに「1枠1本」。両方に書く必要がある行は、両方で空いている一番近い同じ枠を両方に書く（同時投稿）。
+    渕山さんが自分で書いた時刻はそのまま、その枠はその媒体で使用済み。
+    「投稿予定時刻」1列だけの古い見出しなら、その列を両媒体で共有する（今までと同じ動き）。"""
     slots = parse_slots(JT64_POST_SLOTS) if slots is None else slots
     if not slots:
         return
-    taken = set()
+    ig_col, tt_col = jt64_sched_cols(col_idx)
+    if not ig_col or not tt_col:
+        return
+    taken = {ig_col: set(), tt_col: set()}  # 古い見出しなら ig_col == tt_col で1つの組を共有する
     for row in rows:
-        try:
-            t = parse_scheduled_time(row.get(COL_SCHEDULED, ""))
-        except ValueError:
-            t = None
-        if t:
-            taken.add(t)
+        for col in taken:
+            t = _parse_or_none(row.get(col, ""))
+            if t:
+                taken[col].add(t)
+
     for i, row in enumerate(rows):
-        if str(row.get(COL_SCHEDULED, "")).strip():
-            continue
         ig_todo = not str(row.get(COL_IG_STATUS, "")).strip() and is_truthy_cell(row.get(COL_IG_CONFIRMED, ""))
         tt_todo = not str(row.get(COL_TT_STATUS, "")).strip() and is_truthy_cell(row.get(COL_TT_CONFIRMED, ""))
-        if not (ig_todo or tt_todo):
+        need = []  # 時刻を書く必要がある列
+        if ig_todo and not str(row.get(ig_col, "")).strip():
+            need.append(ig_col)
+        if tt_todo and not str(row.get(tt_col, "")).strip() and tt_col not in need:
+            need.append(tt_col)
+        if not need:
             continue
-        t = next_free_slot(now, taken, slots)
-        taken.add(t)
+        used = set().union(*(taken[c] for c in need))
+        t = next_free_slot(now, used, slots)
         text = f"{t:%Y-%m-%d %H:%M}"
-        ws.update_cell(i + 2, col_idx[COL_SCHEDULED], text)
-        row[COL_SCHEDULED] = text
-        log(f"行{i + 2}: 投稿枠 {text} を割り当て（{row.get(COL_VIDEO, '')}）")
+        for col in need:
+            taken[col].add(t)
+            ws.update_cell(i + 2, col_idx[col], text)
+            row[col] = text
+        log(f"行{i + 2}: 投稿枠 {text} を割り当て（{'・'.join(need)}・{row.get(COL_VIDEO, '')}）")
 
 
 def process_jt64_sheet(ws, rows, col_idx, drive, accounts, now):
     """新形式（ジョブタイプ64）のシートを処理し、今回投稿した数（媒体ごとに数える）を返す。"""
     missing = [c for c in JT64_REQUIRED if c not in col_idx]
+    ig_col, tt_col = jt64_sched_cols(col_idx)
+    if not ig_col or not tt_col:
+        missing.append(f"{COL_IG_SCHEDULED}と{COL_TT_SCHEDULED}（または {COL_SCHEDULED}）")
     if missing:
         log(f"エラー: 必須列 {'・'.join(missing)} がスプレッドシート（{JT64_ACCOUNT}・新形式）にありません。")
         return 0
@@ -1117,7 +1152,7 @@ def process_jt64_sheet(ws, rows, col_idx, drive, accounts, now):
 
         # 送信中の TikTok は、TikTok_確認済みのチェックを外しても公開状態を確かめる
         if tt_status == STATUS_SENDING:
-            jt64_check_sending(r, cfg, now)
+            jt64_check_sending(r, cfg, now, tt_col)
 
         # 媒体ごとに「確認済み」のチェックがあり、ステータスが空欄なら投稿する
         # チェックの無い媒体は何もしない（エラーも書かない）
@@ -1126,16 +1161,22 @@ def process_jt64_sheet(ws, rows, col_idx, drive, accounts, now):
         if not (ig_todo or tt_todo):
             continue
 
-        try:
-            scheduled = parse_scheduled_time(row.get(COL_SCHEDULED, ""))
-        except ValueError as e:
-            if ig_todo and ig_ok:
-                r.fail(COL_IG_STATUS, LABEL_IG, e)
-            if tt_todo:
-                r.fail(COL_TT_STATUS, LABEL_TT, e)
+        # 予定時刻は媒体ごとに判定する（空欄なら今すぐ対象・まだ先ならその媒体だけ待つ）
+        def due(todo, col, status_col, label, report):
+            if not todo:
+                return False
+            try:
+                scheduled = parse_scheduled_time(row.get(col, ""))
+            except ValueError as e:
+                if report:
+                    r.fail(status_col, label, e)
+                return False
+            return not (scheduled and scheduled > now)
+
+        ig_todo = due(ig_todo, ig_col, COL_IG_STATUS, LABEL_IG, ig_ok)
+        tt_todo = due(tt_todo, tt_col, COL_TT_STATUS, LABEL_TT, True)
+        if not (ig_todo or tt_todo):
             continue
-        if scheduled and scheduled > now:
-            continue  # 予定時刻がまだ（空欄なら今すぐ対象）
 
         video_name = str(row.get(COL_VIDEO, "")).strip()
 
