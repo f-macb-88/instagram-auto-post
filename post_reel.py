@@ -27,7 +27,7 @@ import re
 import sys
 import time
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import cloudinary
@@ -1041,6 +1041,61 @@ def jt64_check_sending(r, cfg, now):
     log(f"{tag} まだ送信中（{status}）")
 
 
+# 決まった投稿枠（JST）。環境変数 JT64_POST_SLOTS="07:30,18:30" で変えられる
+JT64_POST_SLOTS = os.environ.get("JT64_POST_SLOTS", "07:30,18:30")
+
+
+def parse_slots(text):
+    """ "07:30,18:30" → [(7, 30), (18, 30)]（時刻順） """
+    slots = []
+    for part in str(text).replace("、", ",").split(","):
+        part = part.strip()
+        if part:
+            h, m = part.split(":")
+            slots.append((int(h), int(m)))
+    return sorted(slots)
+
+
+def next_free_slot(now, taken, slots):
+    """now 以降で、まだ誰も使っていない一番近い投稿枠を返す"""
+    day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    for d in range(0, 400):
+        for h, m in slots:
+            t = day + timedelta(days=d, hours=h, minutes=m)
+            if t >= now and t not in taken:
+                return t
+    raise RuntimeError("空いている投稿枠が見つかりません")
+
+
+def jt64_assign_slots(ws, rows, col_idx, now, slots=None):
+    """チェックが入ったのに投稿予定時刻が空欄の行へ、次の空き枠を書き込む（シートの上の行から順に）。
+    渕山さんが自分で時刻を書いた行はそのまま。1つの枠に入るのは1本だけ。"""
+    slots = parse_slots(JT64_POST_SLOTS) if slots is None else slots
+    if not slots:
+        return
+    taken = set()
+    for row in rows:
+        try:
+            t = parse_scheduled_time(row.get(COL_SCHEDULED, ""))
+        except ValueError:
+            t = None
+        if t:
+            taken.add(t)
+    for i, row in enumerate(rows):
+        if str(row.get(COL_SCHEDULED, "")).strip():
+            continue
+        ig_todo = not str(row.get(COL_IG_STATUS, "")).strip() and is_truthy_cell(row.get(COL_IG_CONFIRMED, ""))
+        tt_todo = not str(row.get(COL_TT_STATUS, "")).strip() and is_truthy_cell(row.get(COL_TT_CONFIRMED, ""))
+        if not (ig_todo or tt_todo):
+            continue
+        t = next_free_slot(now, taken, slots)
+        taken.add(t)
+        text = f"{t:%Y-%m-%d %H:%M}"
+        ws.update_cell(i + 2, col_idx[COL_SCHEDULED], text)
+        row[COL_SCHEDULED] = text
+        log(f"行{i + 2}: 投稿枠 {text} を割り当て（{row.get(COL_VIDEO, '')}）")
+
+
 def process_jt64_sheet(ws, rows, col_idx, drive, accounts, now):
     """新形式（ジョブタイプ64）のシートを処理し、今回投稿した数（媒体ごとに数える）を返す。"""
     missing = [c for c in JT64_REQUIRED if c not in col_idx]
@@ -1051,6 +1106,8 @@ def process_jt64_sheet(ws, rows, col_idx, drive, accounts, now):
     cfg = accounts.get(JT64_ACCOUNT) or {}
     ig_ok = ig_ready(cfg)
     log(f"現在時刻(JST): {now:%Y-%m-%d %H:%M}　全{len(rows)}行をチェック（{JT64_ACCOUNT}・新形式）")
+
+    jt64_assign_slots(ws, rows, col_idx, now)
 
     posted = 0
     for i, row in enumerate(rows):
