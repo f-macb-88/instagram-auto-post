@@ -1,0 +1,59 @@
+name: JobType64 Organic Metrics
+
+# ジョブタイプ64のオーガニック投稿（TikTok・インスタ）の実績を、毎日シートの「TikTok実績」「インスタ実績」タブに記録する
+on:
+  schedule:
+    # 毎日 6:10 JST（= 21:10 UTC）。GitHub の schedule は混雑時に数十分遅れることがある
+    - cron: "10 21 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "シートに書かず表示だけ（true/false）"
+        default: "false"
+      only:
+        description: "片方だけ（tiktok / instagram / 空欄=両方）"
+        default: ""
+      tiktok_test_url:
+        description: "この TikTok 公開動画1本だけ取得して表示（シートは開かない）"
+        default: ""
+
+concurrency:
+  group: jt64-metrics
+  cancel-in-progress: false
+
+jobs:
+  metrics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements-metrics.txt
+
+      - name: Unit tests
+        run: python -m unittest test_metrics_jt64
+
+      - name: Record metrics
+        # 入力値はコマンドに直接埋め込まず、環境変数で渡す
+        run: |
+          ARGS=()
+          if [ "$IN_DRY_RUN" = "true" ]; then ARGS+=(--dry-run); fi
+          if [ -n "$IN_ONLY" ]; then ARGS+=(--only "$IN_ONLY"); fi
+          if [ -n "$IN_TEST_URL" ]; then ARGS+=(--tiktok-test-url "$IN_TEST_URL"); fi
+          python metrics_jt64.py "${ARGS[@]}"
+        env:
+          IN_DRY_RUN: ${{ inputs.dry_run }}
+          IN_ONLY: ${{ inputs.only }}
+          IN_TEST_URL: ${{ inputs.tiktok_test_url }}
+          SPREADSHEET_ID_JOBTYPE64: ${{ secrets.SPREADSHEET_ID_JOBTYPE64 }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+          BUFFER_CHANNEL_TIKTOK_JOBTYPE64: ${{ secrets.BUFFER_CHANNEL_TIKTOK_JOBTYPE64 }}
+          # 未登録の間はインスタを保留して正常終了する
+          IG_USER_ID_JOBTYPE64: ${{ secrets.IG_USER_ID_JOBTYPE64 }}
+          IG_ACCESS_TOKEN_JOBTYPE64: ${{ secrets.IG_ACCESS_TOKEN_JOBTYPE64 }}

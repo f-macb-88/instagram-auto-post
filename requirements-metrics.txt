@@ -1,0 +1,6 @@
+# metrics_jt64.py（ジョブタイプ64のオーガニック実績の記録）専用
+gspread==6.1.2
+google-auth==2.34.0
+requests==2.32.3
+# TikTok は仕様変更が多いので最新版を入れる。curl-cffi はブラウザのふりをするのに必要（無いと TikTok に弾かれる）
+yt-dlp[default,curl-cffi]>=2026.10.26
