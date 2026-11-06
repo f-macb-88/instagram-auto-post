@@ -622,10 +622,10 @@ def main(argv=None):
             rows = collect_tiktok(source_rows, now)
             if args.dry_run:
                 print_rows(TAB_TIKTOK, rows)
-            elif rows:
-                write_rows(sh, TAB_TIKTOK, TT_HEADER, rows)
             else:
-                log("TikTok: 記録する投稿がまだありません")
+                if not rows:
+                    log("TikTok: 記録する投稿がまだありません（タブと見出しだけ用意します）")
+                write_rows(sh, TAB_TIKTOK, TT_HEADER, rows)
         except Exception as e:
             failed = True
             log(f"TikTok の記録に失敗: {redact(e)}")
