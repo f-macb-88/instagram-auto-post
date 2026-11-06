@@ -157,8 +157,14 @@ def log(msg):
     print(f"[{datetime.now(JST):%Y-%m-%d %H:%M:%S}] {msg}", flush=True)
 
 
+# 投稿成功の通知は送らない（エラーのときだけ送る。2026-11-06 渕山さん指示）
+NOTIFY_SUCCESS = os.environ.get("SLACK_NOTIFY_SUCCESS") == "1"
+
+
 def notify_slack(text):
     """Slack の Incoming Webhook にメッセージを送る。未設定・失敗時は黙って無視。"""
+    if str(text).startswith("✅") and not NOTIFY_SUCCESS:
+        return
     if not SLACK_WEBHOOK_URL:
         return
     try:
@@ -416,6 +422,7 @@ def mark_error(ws, col_idx, sheet_row, message):
     ws.update_cell(sheet_row, col_idx[COL_STATUS], "エラー")
     if COL_ERROR in col_idx:
         ws.update_cell(sheet_row, col_idx[COL_ERROR], redact(message)[:500])
+    notify_slack(f"⚠️ 自動投稿でエラー（行{sheet_row}）\n{redact(message)[:300]}")
 
 
 def post_instagram_reel(drive, cfg, video_name, cover_name, caption):
@@ -921,6 +928,10 @@ class Jt64Row:
         log(f"行{self.sheet_row}: [{JT64_ACCOUNT}][{label}] 失敗: {redact(message)}")
         self.write(status_col, "エラー")
         self.append_error(label, message)
+        notify_slack(
+            f"⚠️ ジョブタイプ64の自動投稿でエラー（{label}）\n"
+            f"動画: {self.row.get(COL_VIDEO, '')}\n{redact(message)[:300]}"
+        )
 
 
 def jt64_post_instagram(r, drive, cfg, video_name):
