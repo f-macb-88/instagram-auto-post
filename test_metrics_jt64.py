@@ -144,27 +144,65 @@ class TestTikTok(unittest.TestCase):
 
 
 class TestUpsert(unittest.TestCase):
+    """1投稿＝1行。毎日同じ行を上書きし、同じ投稿の古い行は消す（2026-11-16 渕山さん指示）"""
+
+    def row(self, date, url, vid="", views=""):
+        r = [""] * len(m.TT_HEADER)
+        r[m.TT_HEADER.index("取得日")] = date
+        r[m.TT_HEADER.index("投稿URL")] = url
+        r[m.TT_HEADER.index("動画ID")] = vid
+        r[m.TT_HEADER.index("再生数")] = views
+        return r
+
     def test_new_tab(self):
         rows = [{"取得日": "2026-11-07", "投稿URL": "u1", "再生数": 10}]
-        header, upd, app, rewrite = m.plan_upsert([], m.TT_HEADER, rows)
+        header, upd, app, rewrite, dels = m.plan_upsert([], m.TT_HEADER, rows)
         self.assertTrue(rewrite)
         self.assertEqual(header, m.TT_HEADER)
         self.assertEqual(upd, {})
+        self.assertEqual(dels, [])
         self.assertEqual(app[0][header.index("再生数")], 10)
 
-    def test_same_day_overwrites(self):
-        existing = [m.TT_HEADER, ["2026/11/7"] + [""] * 2 + ["u1"] + [""] * (len(m.TT_HEADER) - 4),
-                    ["2026-11-06", "", "", "u1"]]
-        rows = [{"取得日": "2026-11-07", "投稿URL": "u1", "再生数": 20},
-                {"取得日": "2026-11-07", "投稿URL": "u2", "再生数": 5}]
-        header, upd, app, rewrite = m.plan_upsert(existing, m.TT_HEADER, rows)
-        self.assertFalse(rewrite)
+    def test_other_day_overwrites_same_row(self):
+        existing = [m.TT_HEADER, self.row("2026-11-06", "https://tiktok.com/@a/video/111", "111", 5)]
+        rows = [{"取得日": "2026-11-07", "投稿URL": "https://tiktok.com/@a/video/111", "動画ID": "111", "再生数": 20}]
+        header, upd, app, rewrite, dels = m.plan_upsert(existing, m.TT_HEADER, rows)
         self.assertEqual(list(upd), [2])
+        self.assertEqual(upd[2][header.index("再生数")], 20)
+        self.assertEqual(app, [])
+        self.assertEqual(dels, [])
+
+    def test_duplicates_keep_newest_and_delete_older(self):
+        u1, u2 = "https://tiktok.com/@a/video/111", "https://tiktok.com/@a/video/222"
+        existing = [m.TT_HEADER,
+                    self.row("2026-11-06", u1, "111", 5),     # 2 古い → 消す
+                    self.row("2026-11-06", u2, "222", 1),     # 3 古い → 消す
+                    self.row("2026-11-07", u1, "111", 9),     # 4 古い → 消す
+                    self.row("2026-11-07", u2, "222.0", 3),   # 5 u2 の最新（今回は取れなかった）→ 残す
+                    self.row("2026-11-08", u1, "111", 12)]    # 6 u1 の最新 → 上書き
+        rows = [{"取得日": "2026-11-09", "投稿URL": u1, "動画ID": "111", "再生数": 30},
+                {"取得日": "2026-11-09", "投稿URL": "https://tiktok.com/@a/video/333", "動画ID": "333", "再生数": 1}]
+        header, upd, app, rewrite, dels = m.plan_upsert(existing, m.TT_HEADER, rows)
+        self.assertEqual(dels, [2, 3, 4])
+        self.assertEqual(list(upd), [6])
+        self.assertEqual(upd[6][header.index("再生数")], 30)
         self.assertEqual(len(app), 1)
+
+    def test_ig_key_by_media_id(self):
+        r = [""] * len(m.IG_HEADER)
+        r[m.IG_HEADER.index("投稿URL")] = "https://www.instagram.com/reel/AAA/"
+        r[m.IG_HEADER.index("メディアID")] = "1789"
+        existing = [m.IG_HEADER, list(r), list(r)]
+        rows = [{"投稿URL": "https://www.instagram.com/reel/AAA/", "メディアID": "1789", "再生数": 7}]
+        _, upd, app, _, dels = m.plan_upsert(existing, m.IG_HEADER, rows)
+        self.assertEqual((list(upd), app, dels), ([3], [], [2]))
+
+    def test_group_runs(self):
+        self.assertEqual(m.group_runs([9, 3, 4, 5]), [(3, 5), (9, 9)])
 
     def test_missing_header_appended_at_end(self):
         existing = [["取得日", "投稿URL", "再生数"]]
-        header, _, _, rewrite = m.plan_upsert(existing, m.TT_HEADER, [])
+        header, _, _, rewrite, _ = m.plan_upsert(existing, m.TT_HEADER, [])
         self.assertTrue(rewrite)
         self.assertEqual(header[:3], ["取得日", "投稿URL", "再生数"])
         self.assertEqual(len(header), len(m.TT_HEADER))

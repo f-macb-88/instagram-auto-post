@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """ジョブタイプ64のオーガニック投稿（TikTok・インスタ @jobtype64）の実績を毎日スプレッドシートに記録する。
 
-1行＝1投稿×1日のスナップショット（時系列）。同じ日に2回動いたら、その日の行を最新の値で上書きする（重複しない）。
+1行＝1投稿（2026-11-16 渕山さん指示）。毎日その行を最新の値で上書きし、同じ投稿の古い行は消す。
+「取得日」「取得時刻」は最後に値を取った日時。日ごとの推移は残さない。
 
   TikTok  → タブ「TikTok実績」
     ・再生数／いいね／コメント／シェア／保存 … 公開ページ（yt-dlp・ログイン不要）
@@ -69,7 +70,9 @@ IG_HEADER = [
     "再生数", "リーチ", "いいね", "コメント", "保存", "シェア", "リポスト", "合計インタラクション",
     "平均視聴時間_秒", "合計視聴時間_秒", "取得状況",
 ]
-KEY_COLS = ("取得日", "投稿URL")  # 同じ日・同じ投稿の行は上書きする
+# 同じ投稿かどうかは ID（TikTok は動画ID・インスタはメディアID）で見る。ID が空なら投稿URLで見る
+ID_COLS = ("動画ID", "メディアID")
+URL_COL = "投稿URL"
 DATE_COLS = {"取得日": "yyyy-mm-dd", "取得時刻": "yyyy-mm-dd hh:mm", "投稿日時": "yyyy-mm-dd hh:mm",
              "Buffer指標の更新日時": "yyyy-mm-dd hh:mm"}
 
@@ -176,8 +179,16 @@ def normalize_date_key(value):
     return s
 
 
-def row_key(date_value, url):
-    return (normalize_date_key(date_value), str(url or "").strip())
+def post_key(id_value, url):
+    """同じ投稿をまとめるための鍵。ID があれば ID、無ければ URL から読める ID、それも無ければ URL"""
+    v = str(id_value or "").strip().lstrip("'")
+    if v.endswith(".0") and v[:-2].isdigit():  # シートが数字として返したとき
+        v = v[:-2]
+    if v:
+        return "id:" + v
+    u = str(url or "").strip()
+    code = tiktok_video_id(u) or ig_shortcode(u)
+    return ("code:" + code) if code else ("url:" + u)
 
 
 # ---- 投稿管理タブ（読むだけ） ---------------------------------------------------
@@ -501,8 +512,10 @@ def collect_tiktok(source_rows, now, env=os.environ):
 # ---- シートへの書き込み ------------------------------------------------------------
 
 def plan_upsert(existing_values, header, rows):
-    """既存のセル（get_all_values）と新しい行から、上書きする行と追記する行を決める。
-    戻り値: (使う見出し, {シートの行番号: 値のリスト}, [追記する値のリスト], 見出しを書き直すか)"""
+    """既存のセル（get_all_values）と新しい行から、上書きする行・追記する行・消す行を決める。1投稿＝1行。
+    同じ投稿の行が既に何行もあるときは、いちばん下（いちばん新しい）の1行を残して最新の値で上書きし、上の古い行は消す。
+    今回取れなかった投稿の行は触らない（前回の値のまま残す）。
+    戻り値: (使う見出し, {シートの行番号: 値のリスト}, [追記する値のリスト], 見出しを書き直すか, [消す行番号])"""
     cur_header = [norm_header(h) for h in (existing_values[0] if existing_values else [])]
     rewrite_header = not any(cur_header)
     use_header = list(header) if rewrite_header else list(cur_header)
@@ -511,23 +524,38 @@ def plan_upsert(existing_values, header, rows):
             use_header.append(h)
             rewrite_header = True
     idx = {h: i for i, h in enumerate(use_header)}
-    k0, k1 = idx[KEY_COLS[0]], idx[KEY_COLS[1]]
-    existing = {}
+    id_col = next((c for c in ID_COLS if c in header), None)
+    ki = idx.get(id_col) if id_col else None
+    ku = idx[URL_COL]
+
+    def key_of(get):
+        return post_key(get(id_col) if id_col else "", get(URL_COL))
+
+    existing, dup_rows = {}, []
     for n, r in enumerate(existing_values[1:] if existing_values else [], start=2):
         r = list(r) + [""] * (len(use_header) - len(r))
-        existing[row_key(r[k0], r[k1])] = n
+        if not any(str(c).strip() for c in r):
+            continue
+        k = post_key(r[ki] if ki is not None else "", r[ku])
+        if k in existing:  # 下の行ほど新しい。新しいほうを残し、上の古い行を消す
+            dup_rows.append(existing[k])
+        existing[k] = n
 
     def to_list(row):
         return [row.get(h, "") for h in use_header]
 
-    updates, appends = {}, []
+    updates, appends, seen = {}, [], set()
     for row in rows:
-        n = existing.get(row_key(row.get(KEY_COLS[0]), row.get(KEY_COLS[1])))
+        k = key_of(row.get)
+        if k in seen:  # 同じ回に同じ投稿が2回来たら後のほうは捨てる
+            continue
+        seen.add(k)
+        n = existing.get(k)
         if n:
             updates[n] = to_list(row)
         else:
             appends.append(to_list(row))
-    return use_header, updates, appends, rewrite_header
+    return use_header, updates, appends, rewrite_header, sorted(dup_rows)
 
 
 def col_letter(n):
@@ -552,7 +580,7 @@ def ensure_tab(sh, title, header):
 def write_rows(sh, title, header, rows):
     ws, created = ensure_tab(sh, title, header)
     values = ws.get_all_values()
-    use_header, updates, appends, rewrite_header = plan_upsert(values, header, rows)
+    use_header, updates, appends, rewrite_header, deletes = plan_upsert(values, header, rows)
     last = col_letter(len(use_header))
     if ws.col_count < len(use_header):
         ws.add_cols(len(use_header) - ws.col_count)
@@ -570,9 +598,24 @@ def write_rows(sh, title, header, rows):
             [{"range": f"A{n}:{last}{n}", "values": [v]} for n, v in sorted(updates.items())],
             value_input_option="USER_ENTERED",
         )
+    if deletes:
+        # 下の行から消す（上から消すと行番号がずれる）。続いている行はまとめて1回で消す
+        for start, end in reversed(group_runs(deletes)):
+            ws.delete_rows(start, end)
     if appends:
         ws.append_rows(appends, value_input_option="USER_ENTERED", table_range="A1")
-    log(f"「{title}」: 上書き {len(updates)} 行・追記 {len(appends)} 行")
+    log(f"「{title}」: 上書き {len(updates)} 行・追記 {len(appends)} 行・同じ投稿の古い行を削除 {len(deletes)} 行")
+
+
+def group_runs(nums):
+    """[3,4,5,9] → [(3,5),(9,9)]"""
+    runs = []
+    for n in sorted(nums):
+        if runs and n == runs[-1][1] + 1:
+            runs[-1] = (runs[-1][0], n)
+        else:
+            runs.append((n, n))
+    return runs
 
 
 def open_sheet(env=os.environ):
