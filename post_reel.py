@@ -49,6 +49,12 @@ SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 
 GRAPH = "https://graph.facebook.com/v21.0"
+# トライアルリール（フォロワー以外に先に見せる）の指定 trial_params は 2025年11月に足された項目なので、
+# トライアルのときだけ新しい版の API に送る（普通の投稿は今までどおり v21.0 のまま）。
+# 出典: https://developers.facebook.com/documentation/instagram-platform/instagram-graph-api/reference/ig-user/media
+GRAPH_TRIAL = "https://graph.facebook.com/v25.0"
+TRIAL_AUTO = "SS_PERFORMANCE"  # 反応が良ければ自動で本投稿（フォロワーにも表示）になる
+TRIAL_MANUAL = "MANUAL"  # 本投稿への切り替えはインスタのアプリで手動
 # Buffer の API は GraphQL の1本だけ（https://developers.buffer.com/guides/getting-started.md）
 BUFFER_API = "https://api.buffer.com"
 JST = ZoneInfo("Asia/Tokyo")
@@ -81,10 +87,17 @@ def load_accounts(env=None):
             "access_token": env.get("IG_ACCESS_TOKEN_JOBTYPE64", ""),
             # 専用フォルダが未設定なら love64 と同じフォルダから素材を探す
             "drive_folder_id": env.get("DRIVE_FOLDER_ID_JOBTYPE64", "") or love64_folder,
+            # 「本番」以外にも動画を探すフォルダ（カンマ区切り。例：トライアルリール用のフォルダ）
+            "drive_extra_folder_ids": split_ids(env.get("DRIVE_EXTRA_FOLDER_IDS_JOBTYPE64", "")),
             "buffer_api_key": buffer_key,
             "buffer_channel_tiktok": env.get("BUFFER_CHANNEL_TIKTOK_JOBTYPE64", ""),
         },
     }
+
+
+def split_ids(text):
+    """カンマ・空白区切りのフォルダIDを並べる。"""
+    return [x for x in re.split(r"[,\s]+", str(text or "")) if x]
 
 
 def missing_tiktok_settings(cfg):
@@ -122,6 +135,8 @@ COL_IG_CAPTION = "インスタ_キャプション"
 COL_TT_CAPTION = "TikTok_キャプション"
 COL_IG_STATUS = "インスタ_ステータス"  # この見出しがあるシートを新形式とみなす
 COL_IG_URL = "インスタ_投稿URL"
+# 任意の列。空欄＝普通のリール／チェック・「自動」＝トライアル（反応が良ければ自動で本投稿）／「手動」＝トライアル（本投稿はアプリで手動）
+COL_IG_TRIAL = "インスタ_トライアル"
 COL_TT_STATUS = "TikTok_ステータス"
 COL_TT_URL = "TikTok_投稿URL"
 COL_ADDED = "追加日時"  # 予定時刻が空欄の送信中の行で、あきらめる時刻の基準に使う
@@ -281,6 +296,30 @@ def check_tiktok_row(row, account, cfg):
     return ("tiktok", account, cfg)
 
 
+def trial_strategy(value):
+    """「インスタ_トライアル」列の値 → trial_params の graduation_strategy。普通の投稿なら None。"""
+    v = _normalize_cell(value)
+    if v in ("", "false", "いいえ", "no", "0", "off", "×", "なし"):
+        return None
+    if v in ("手動", "manual"):
+        return TRIAL_MANUAL
+    if v in ("自動", "auto", "ss_performance") or is_truthy_cell(value):
+        return TRIAL_AUTO
+    raise ValueError(f"「{COL_IG_TRIAL}」の値が読めません: '{value}'（空欄・チェック・自動・手動のどれか）")
+
+
+def find_in_folders(drive, cfg, name):
+    """本番のフォルダ → 追加のフォルダ（トライアル用など）の順に探す。"""
+    folders = [cfg["drive_folder_id"]] + list(cfg.get("drive_extra_folder_ids") or [])
+    for i, folder_id in enumerate(folders):
+        try:
+            return find_drive_file(drive, folder_id, name)
+        except FileNotFoundError:
+            if i == len(folders) - 1:
+                raise
+    raise FileNotFoundError(f"ドライブにファイルが見つかりません: '{name}'")
+
+
 def find_drive_file(drive, folder_id, name):
     """ドライブの指定フォルダ内からファイル名で検索し file_id を返す。
 
@@ -340,7 +379,8 @@ def delete_from_cloudinary(public_id, resource_type):
         log(f"  Cloudinary削除に失敗（無視）: {e}")
 
 
-def create_reel_container(ig_user_id, access_token, video_url, cover_url, caption):
+def reel_container_request(ig_user_id, access_token, video_url, cover_url, caption, trial=None):
+    """コンテナ作成の (URL, 送る値)。trial が TRIAL_AUTO／TRIAL_MANUAL ならトライアルリールにする。"""
     data = {
         "media_type": "REELS",
         "video_url": video_url,
@@ -349,7 +389,18 @@ def create_reel_container(ig_user_id, access_token, video_url, cover_url, captio
     }
     if cover_url:
         data["cover_url"] = cover_url
-    r = requests.post(f"{GRAPH}/{ig_user_id}/media", data=data, timeout=120)
+    base = GRAPH
+    if trial:
+        if trial not in (TRIAL_AUTO, TRIAL_MANUAL):
+            raise ValueError(f"トライアルの指定が不正です: {trial}")
+        data["trial_params"] = json.dumps({"graduation_strategy": trial})
+        base = GRAPH_TRIAL
+    return f"{base}/{ig_user_id}/media", data
+
+
+def create_reel_container(ig_user_id, access_token, video_url, cover_url, caption, trial=None):
+    url, data = reel_container_request(ig_user_id, access_token, video_url, cover_url, caption, trial)
+    r = requests.post(url, data=data, timeout=120)
     body = r.json()
     if "id" not in body:
         raise RuntimeError(f"コンテナ作成に失敗: {body}")
@@ -425,22 +476,22 @@ def mark_error(ws, col_idx, sheet_row, message):
     notify_slack(f"⚠️ 自動投稿でエラー（行{sheet_row}）\n{redact(message)[:300]}")
 
 
-def post_instagram_reel(drive, cfg, video_name, cover_name, caption):
-    """1行分のリールを投稿して permalink を返す。Cloudinary の一時ファイルは必ず消す。"""
-    folder_id = cfg["drive_folder_id"]
+def post_instagram_reel(drive, cfg, video_name, cover_name, caption, trial=None):
+    """1行分のリールを投稿して permalink を返す。Cloudinary の一時ファイルは必ず消す。
+    trial が TRIAL_AUTO／TRIAL_MANUAL ならトライアルリールとして投稿する。"""
     ig_user_id = cfg["ig_user_id"]
     token = cfg["access_token"]
     uploaded = []  # Cloudinary後始末用
     try:
         # 1) ドライブから取得
-        video_id = find_drive_file(drive, folder_id, video_name)
+        video_id = find_in_folders(drive, cfg, video_name)
         video_path = safe_tmp_path(video_name)
         download_drive_file(drive, video_id, video_path)
         log("  動画ダウンロード完了")
 
         cover_url = ""
         if cover_name:
-            cover_id = find_drive_file(drive, folder_id, cover_name)
+            cover_id = find_in_folders(drive, cfg, cover_name)
             cover_path = safe_tmp_path(cover_name)
             download_drive_file(drive, cover_id, cover_path)
             cover_url, cpid, crt = upload_to_cloudinary(cover_path, "image")
@@ -453,8 +504,8 @@ def post_instagram_reel(drive, cfg, video_name, cover_name, caption):
         log("  動画アップロード完了")
 
         # 3) Instagram投稿
-        creation_id = create_reel_container(ig_user_id, token, video_url, cover_url, caption)
-        log(f"  コンテナ作成: {creation_id}")
+        creation_id = create_reel_container(ig_user_id, token, video_url, cover_url, caption, trial)
+        log(f"  コンテナ作成: {creation_id}" + (f"（トライアル {trial}）" if trial else ""))
         wait_until_finished(token, creation_id)
         media_id = publish_container(ig_user_id, token, creation_id)
         return get_permalink(token, media_id)
@@ -614,8 +665,7 @@ def post_tiktok_video(drive, cfg, video_name, caption, ai_generated):
     - 待ち時間内に終わらなければ "sending"。Buffer が公開時に動画を取りに来るので、動画は消さずに残す
     - Buffer 側で失敗（error）・作成前の失敗は例外（Cloudinary の動画は消す）
     """
-    folder_id = cfg["drive_folder_id"]
-    video_id = find_drive_file(drive, folder_id, video_name)
+    video_id = find_in_folders(drive, cfg, video_name)
     video_path = safe_tmp_path(video_name)
     download_drive_file(drive, video_id, video_path)
     log("  動画ダウンロード完了")
@@ -946,14 +996,16 @@ def jt64_post_instagram(r, drive, cfg, video_name):
         problem = check_caption(caption, COL_IG_CAPTION, IG_CAPTION_MAX, IG_HASHTAG_MAX)
         if problem:
             raise ValueError(problem)
-        log(f"行{r.sheet_row}: [{JT64_ACCOUNT}][{LABEL_IG}] 投稿開始（動画 {video_name}）")
-        permalink = post_instagram_reel(drive, cfg, video_name, cover_name, caption)
+        trial = trial_strategy(r.row.get(COL_IG_TRIAL, ""))
+        log(f"行{r.sheet_row}: [{JT64_ACCOUNT}][{LABEL_IG}] 投稿開始（動画 {video_name}"
+            + (f"・トライアル {trial}" if trial else "") + "）")
+        permalink = post_instagram_reel(drive, cfg, video_name, cover_name, caption, trial)
     except Exception as e:
         r.fail(COL_IG_STATUS, LABEL_IG, e)
         return False
 
     log(f"  [{LABEL_IG}] 公開完了: {permalink}")
-    r.write(COL_IG_STATUS, "投稿済")
+    r.write(COL_IG_STATUS, "トライアル投稿済" if trial else "投稿済")
     r.write(COL_IG_URL, permalink)
     notify_slack(
         f"✅ Instagram（{JT64_ACCOUNT}）にリールを投稿しました\n"

@@ -43,6 +43,8 @@ jobs:
           IG_USER_ID_JOBTYPE64: ${{ secrets.IG_USER_ID_JOBTYPE64 }}
           IG_ACCESS_TOKEN_JOBTYPE64: ${{ secrets.IG_ACCESS_TOKEN_JOBTYPE64 }}
           DRIVE_FOLDER_ID_JOBTYPE64: ${{ secrets.DRIVE_FOLDER_ID_JOBTYPE64 }}
+          # 本番以外にも動画を探すフォルダ（トライアルリール用など・カンマ区切り）
+          DRIVE_EXTRA_FOLDER_IDS_JOBTYPE64: ${{ secrets.DRIVE_EXTRA_FOLDER_IDS_JOBTYPE64 }}
           # TikTok（Buffer 経由）。未設定でも Instagram の投稿は止まらない（TikTok の行だけエラー）
           BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
           BUFFER_CHANNEL_TIKTOK_JOBTYPE64: ${{ secrets.BUFFER_CHANNEL_TIKTOK_JOBTYPE64 }}
