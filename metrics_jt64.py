@@ -270,14 +270,18 @@ def fetch_ig_insights(media_id, token, metrics=IG_METRICS):
     戻り値: (値の dict, 取れなかった指標のリスト)"""
     try:
         return parse_insights(graph_get(f"{media_id}/insights", token, {"metric": ",".join(metrics)})), []
-    except RuntimeError:
-        pass
+    except RuntimeError as e:
+        first_err = str(e)
     vals, failed = {}, []
     for m in metrics:
         try:
             vals.update(parse_insights(graph_get(f"{media_id}/insights", token, {"metric": m})))
-        except RuntimeError:
+        except RuntimeError as e:
             failed.append(m)
+            first_err = first_err or str(e)
+    if failed and len(failed) == len(metrics):
+        # 全部だめなときは指標の問題ではなく鍵・権限などの問題。理由を残す
+        failed = [f"全指標（{first_err[:200]}）"]
     return vals, failed
 
 
@@ -319,6 +323,8 @@ def collect_instagram(source_rows, now, env=os.environ):
             ins, failed = fetch_ig_insights(m["id"], token)
         except Exception as e:  # 1本の失敗で全体を止めない
             ins, failed = {}, [redact(e)[:80]]
+        if failed and not ins and not rows:
+            log(f"インスタ: 指標を取れません: {failed[0]}")
         rows.append(build_ig_row(m, ins, failed, by_code.get(code, ""), now))
     return rows
 
