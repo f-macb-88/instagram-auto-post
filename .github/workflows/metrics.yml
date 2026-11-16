@@ -16,6 +16,9 @@ on:
       tiktok_test_url:
         description: "この TikTok 公開動画1本だけ取得して表示（シートは開かない）"
         default: ""
+      check_ig_token:
+        description: "インスタの鍵の種類・権限・期限を表示するだけ（true/false）"
+        default: "false"
 
 concurrency:
   group: jt64-metrics
@@ -45,11 +48,13 @@ jobs:
           if [ "$IN_DRY_RUN" = "true" ]; then ARGS+=(--dry-run); fi
           if [ -n "$IN_ONLY" ]; then ARGS+=(--only "$IN_ONLY"); fi
           if [ -n "$IN_TEST_URL" ]; then ARGS+=(--tiktok-test-url "$IN_TEST_URL"); fi
+          if [ "$IN_CHECK_IG" = "true" ]; then ARGS+=(--check-ig-token); fi
           python metrics_jt64.py "${ARGS[@]}"
         env:
           IN_DRY_RUN: ${{ inputs.dry_run }}
           IN_ONLY: ${{ inputs.only }}
           IN_TEST_URL: ${{ inputs.tiktok_test_url }}
+          IN_CHECK_IG: ${{ inputs.check_ig_token }}
           SPREADSHEET_ID_JOBTYPE64: ${{ secrets.SPREADSHEET_ID_JOBTYPE64 }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}

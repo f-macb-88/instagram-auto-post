@@ -644,6 +644,33 @@ def open_sheet(env=os.environ):
     return gc.open_by_key(sheet_id)
 
 
+def check_ig_token(env=os.environ):
+    """インスタの鍵の種類・権限・期限を表示する（鍵の値は出さない）"""
+    token = env.get("IG_ACCESS_TOKEN_JOBTYPE64", "")
+    ig_user_id = env.get("IG_USER_ID_JOBTYPE64", "")
+    if not token:
+        log("鍵の確認: IG_ACCESS_TOKEN_JOBTYPE64 が未設定")
+        return 1
+    try:
+        d = graph_get("debug_token", token, {"input_token": token}).get("data") or {}
+        exp = d.get("expires_at")
+        log(f"鍵の確認: 種類={d.get('type')} 有効={d.get('is_valid')} アプリID={d.get('app_id')} "
+            f"期限={'無期限' if not exp else datetime.fromtimestamp(exp, JST).strftime('%Y-%m-%d')}")
+        log(f"鍵の確認: 権限={','.join(d.get('scopes') or [])}")
+        for g in d.get("granular_scopes") or []:
+            log(f"鍵の確認:   {g.get('scope')} 対象={','.join(g.get('target_ids') or []) or '全部'}")
+    except Exception as e:
+        log(f"鍵の確認: debug_token を読めません: {redact(e)}")
+    for path, params in ((f"{ig_user_id}", {"fields": "username"}),
+                         (f"{ig_user_id}/insights", {"metric": "reach", "period": "day"})):
+        try:
+            body = graph_get(path, token, params)
+            log(f"鍵の確認: {path.replace(ig_user_id, 'IGアカウント')} … 読めました（{str(body)[:120]}）")
+        except Exception as e:
+            log(f"鍵の確認: {path.replace(ig_user_id, 'IGアカウント')} … {redact(e)}")
+    return 0
+
+
 def print_rows(title, rows):
     log(f"--- {title}（{len(rows)} 行・シートには書きません）")
     for r in rows:
@@ -655,8 +682,12 @@ def main(argv=None):
     ap.add_argument("--dry-run", action="store_true", help="取得して表示するだけ（シートに書かない）")
     ap.add_argument("--only", choices=["tiktok", "instagram"], help="片方だけ")
     ap.add_argument("--tiktok-test-url", help="この公開動画1本だけ取得して表示（シートは開かない）")
+    ap.add_argument("--check-ig-token", action="store_true", help="インスタの鍵の種類・権限・期限を表示するだけ")
     args = ap.parse_args(argv)
     now = datetime.now(JST)
+
+    if args.check_ig_token:
+        return check_ig_token()
 
     if args.tiktok_test_url:
         info = fetch_tiktok_public(args.tiktok_test_url)
