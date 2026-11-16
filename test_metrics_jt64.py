@@ -143,6 +143,21 @@ class TestTikTok(unittest.TestCase):
         self.assertIn("最大24時間遅れ", row["取得状況"])
 
 
+class TestIgFallback(unittest.TestCase):
+    def test_likes_comments_without_insights(self):
+        media = {"id": "1", "permalink": "https://www.instagram.com/reel/AAA/", "timestamp": "2026-11-10T00:00:00+0000",
+                 "like_count": 12, "comments_count": 3}
+        row = m.build_ig_row(media, {}, ["全指標（Graph API エラー（HTTP 400 code 10）: (#10) ...）"], "v.mp4", NOW)
+        self.assertEqual((row["いいね"], row["コメント"]), (12, 3))
+        self.assertNotIn("再生数", row)
+        self.assertIn("いいね・コメントのみ", row["取得状況"])
+
+    def test_insights_win(self):
+        media = {"id": "1", "permalink": "u", "like_count": 1}
+        row = m.build_ig_row(media, {"likes": 9, "views": 100}, [], "", NOW)
+        self.assertEqual((row["いいね"], row["再生数"], row["取得状況"]), (9, 100, "OK"))
+
+
 class TestUpsert(unittest.TestCase):
     """1投稿＝1行。毎日同じ行を上書きし、同じ投稿の古い行は消す（2026-11-16 渕山さん指示）"""
 

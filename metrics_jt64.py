@@ -236,7 +236,8 @@ def graph_get(path, token, params=None):
 
 def list_ig_reels(ig_user_id, token, max_pages=10):
     """@jobtype64 のメディア一覧からリールだけ返す（手動投稿分も含む）"""
-    fields = "id,permalink,shortcode,timestamp,media_type,media_product_type"
+    # like_count・comments_count はインサイトの権限が無い鍵（instagram_basic だけ）でも読める
+    fields = "id,permalink,shortcode,timestamp,media_type,media_product_type,like_count,comments_count"
     body = graph_get(f"{ig_user_id}/media", token, {"fields": fields, "limit": 50})
     out = []
     for _ in range(max_pages):
@@ -299,11 +300,21 @@ def build_ig_row(media, insights, failed, video_name, now):
     for metric, col in IG_METRIC_TO_COL.items():
         if metric in insights:
             row[col] = insights[metric]
+    # インサイトが読めないときも、投稿の情報にあるいいね・コメントは入れる
+    for field, col in (("like_count", "いいね"), ("comments_count", "コメント")):
+        if col not in row and isinstance(media.get(field), (int, float)):
+            row[col] = media[field]
     if "ig_reels_avg_watch_time" in insights:
         row["平均視聴時間_秒"] = round(insights["ig_reels_avg_watch_time"] / IG_WATCH_TIME_DIVISOR, 2)
     if "ig_reels_video_view_total_time" in insights:
         row["合計視聴時間_秒"] = round(insights["ig_reels_video_view_total_time"] / IG_WATCH_TIME_DIVISOR, 1)
-    row["取得状況"] = "OK" if not failed else "一部取得できず: " + ",".join(failed)
+    if not failed:
+        row["取得状況"] = "OK"
+    elif not insights and "code 10" in failed[0]:
+        row["取得状況"] = ("いいね・コメントのみ（鍵に instagram_manage_insights が無く、"
+                         "再生数・リーチ・保存・シェア・視聴時間は読めない）")
+    else:
+        row["取得状況"] = "一部取得できず: " + ",".join(failed)
     return row
 
 
