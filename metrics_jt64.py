@@ -112,12 +112,15 @@ def log(msg):
 
 def redact(text):
     """エラー文に鍵の値が混ざっても出さない（公開リポジトリの Actions ログは誰でも見られる）"""
+    from urllib.parse import quote
+
     text = str(text)
     for k in SECRET_ENV:
         v = os.environ.get(k, "")
         if v and len(v) > 8:
-            text = text.replace(v, "***")
-    return re.sub(r"(access_token=)[^&\s]+", r"\1***", text)
+            for form in (v, quote(v, safe="")):  # URL に入ったときの形も消す
+                text = text.replace(form, "***")
+    return re.sub(r"((?:access|input)_token=)[^&\s]+", r"\1***", text)
 
 
 def norm_header(name):
@@ -223,7 +226,10 @@ def read_source_rows(values):
 def graph_get(path, token, params=None):
     """Graph API を GET。トークンは Authorization ヘッダーで送り、URL に入れない"""
     url = path if path.startswith("http") else f"{GRAPH}/{path}"
-    r = requests.get(url, params=params or {}, headers={"Authorization": f"Bearer {token}"}, timeout=60)
+    try:
+        r = requests.get(url, params=params or {}, headers={"Authorization": f"Bearer {token}"}, timeout=60)
+    except requests.RequestException as e:  # 例外の文には URL（鍵を含むことがある）が入るので出さない
+        raise RuntimeError(f"Graph API に接続できません（{type(e).__name__}）") from None
     try:
         body = r.json()
     except ValueError:
