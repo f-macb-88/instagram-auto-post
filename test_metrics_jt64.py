@@ -197,6 +197,11 @@ class TestUpsert(unittest.TestCase):
         _, upd, app, _, dels = m.plan_upsert(existing, m.IG_HEADER, rows)
         self.assertEqual((list(upd), app, dels), ([3], [], [2]))
 
+    def test_blank_key_rows_are_never_deleted(self):
+        existing = [m.TT_HEADER, self.row("2026-11-06", "", "", 1), self.row("2026-11-07", "", "", 2)]
+        _, upd, app, _, dels = m.plan_upsert(existing, m.TT_HEADER, [])
+        self.assertEqual((upd, app, dels), ({}, [], []))
+
     def test_group_runs(self):
         self.assertEqual(m.group_runs([9, 3, 4, 5]), [(3, 5), (9, 9)])
 

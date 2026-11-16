@@ -543,6 +543,8 @@ def plan_upsert(existing_values, header, rows):
         if not any(str(c).strip() for c in r):
             continue
         k = post_key(r[ki] if ki is not None else "", r[ku])
+        if k == "url:":  # ID も URL も空の行は、どの投稿か分からないので触らない（消さない）
+            continue
         if k in existing:  # 下の行ほど新しい。新しいほうを残し、上の古い行を消す
             dup_rows.append(existing[k])
         existing[k] = n
