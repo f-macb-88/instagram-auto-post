@@ -606,12 +606,18 @@ def is_new_layout(values):
     """新しい形か。1行目 A 列が「取得日時」、または2行目が見出し（投稿URL を含む）なら新しい形とみなす（A1 を手で触っても組み替えない）"""
     if values and values[0] and norm_header(values[0][0]) == BANNER_LABEL:
         return True
-    return len(values) >= 2 and URL_COL in [norm_header(h) for h in values[1]]
+    if len(values) < 2 or any(str(c).strip() for c in values[0][2:]):  # 1行目が取得日時の行（A・B 列だけ）でなければ前の形
+        return False
+    row2 = [norm_header(h) for h in values[1]]
+    return URL_COL in row2 and "投稿日時" in row2
 
 
 def safe_cell(v):
     """「=」「+」「@」で始まる文字は数式として読まれないよう先頭に ' を付ける（USER_ENTERED で書くため）"""
-    if isinstance(v, str) and v[:1] in ("=", "+", "@"):
+    if not isinstance(v, str):
+        return v  # API から取った数値はそのまま
+    h = v.lstrip(" \t\r\n\u3000")
+    if h[:1] in ("=", "+", "@", "|") or (h[:1] == "-" and not h[1:2].isdigit()):
         return "'" + v
     return v
 
@@ -625,7 +631,7 @@ def migrate_values(values, header):
     if URL_COL not in old:  # 知らない表は組み替えない（消さないために止める）
         raise ValueError(f"1行目に「{URL_COL}」が無いので、前の形の実績タブとは判断できません。組み替えずに止めます")
     new_header = list(header) + [h for h in old if h and h not in header and h not in OLD_ONLY_COLS]
-    out = [new_header]
+    out = [[safe_cell(h) for h in new_header]]
     for r in values[1:]:
         if not any(str(c).strip() for c in r):
             continue

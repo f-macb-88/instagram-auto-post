@@ -263,6 +263,12 @@ class TestUpsert(unittest.TestCase):
         self.assertEqual(m.safe_cell("+81"), "'+81")
         self.assertEqual(m.safe_cell("2026-11-16 07:32"), "2026-11-16 07:32")
         self.assertEqual(m.safe_cell(173), 173)
+        self.assertEqual(m.safe_cell(" =1+1"), "' =1+1")
+        self.assertEqual(m.safe_cell("-SUM(1)"), "'-SUM(1)")
+        self.assertEqual(m.safe_cell("-5"), "-5")
+        self.assertEqual(m.migrate_values([["投稿URL", "=x"]], m.IG_HEADER)[0][-1], "'=x")
+        # 1行目が見出し（前の形）なら、2行目に投稿URL があっても新しい形とはみなさない
+        self.assertFalse(m.is_new_layout([["取得日", "取得時刻", "動画ファイル名"], ["投稿URL", "投稿日時"]]))
 
     def test_col_letter(self):
         self.assertEqual(m.col_letter(1), "A")
