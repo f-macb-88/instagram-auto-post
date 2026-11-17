@@ -45,8 +45,10 @@ SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "")  # らぶ64のシート（
 SPREADSHEET_ID_JOBTYPE64 = os.environ.get("SPREADSHEET_ID_JOBTYPE64", "")  # ジョブタイプ64のシート（空欄なら jobtype64）
 SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
 # CLOUDINARY_URL 環境変数は cloudinary ライブラリが自動で読む
-# Slack通知用（任意）。未設定なら通知をスキップする。
-SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
+# Slack通知用（任意）。★渕山さんとのDMだけに送る（2026-11-17 渕山さん指示「group-introに送らないで、全てDMに」）。
+# 送り先は SLACK_DM_WEBHOOK_URL（Incoming Webhook の送り先に自分を選んだもの）。未設定なら通知しない。
+# 前の SLACK_WEBHOOK_URL（#group-intro 行き）は使わない。
+SLACK_WEBHOOK_URL = os.environ.get("SLACK_DM_WEBHOOK_URL", "")
 
 GRAPH = "https://graph.facebook.com/v21.0"
 # トライアルリール（フォロワー以外に先に見せる）の指定 trial_params は 2025年11月に足された項目なので、
@@ -177,7 +179,7 @@ NOTIFY_SUCCESS = os.environ.get("SLACK_NOTIFY_SUCCESS") == "1"
 
 
 def notify_slack(text):
-    """Slack の Incoming Webhook にメッセージを送る。未設定・失敗時は黙って無視。"""
+    """渕山さんとのDM（Incoming Webhook）にメッセージを送る。未設定・失敗時は黙って無視。"""
     if str(text).startswith("✅") and not NOTIFY_SUCCESS:
         return
     if not SLACK_WEBHOOK_URL:

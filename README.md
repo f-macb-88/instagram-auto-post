@@ -57,7 +57,7 @@ Instagramへリールを自動投稿する仕組み。GitHub Actions で無人�
 | `DRIVE_FOLDER_ID` | love64 の素材を置くドライブフォルダのID |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | サービスアカウントJSONキーの中身（全文） |
 | `CLOUDINARY_URL` | `cloudinary://APIKEY:APISECRET@CLOUDNAME` 形式 |
-| `SLACK_WEBHOOK_URL` | 投稿完了の通知先（任意） |
+| `SLACK_DM_WEBHOOK_URL` | エラーの通知先＝渕山さんとのDM（Incoming Webhook の送り先に自分を選んだもの・任意。未設定なら通知しない。#group-intro には送らない） |
 | `IG_USER_ID_JOBTYPE64` | jobtype64 の InstagramビジネスアカウントID（17841436543196844） |
 | `IG_ACCESS_TOKEN_JOBTYPE64` | 「JOB TYPE 64」ページの無期限ページアクセストークン |
 | `DRIVE_FOLDER_ID_JOBTYPE64` | jobtype64 の素材フォルダのID（任意。未登録なら `DRIVE_FOLDER_ID` のフォルダから探す） |
