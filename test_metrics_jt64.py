@@ -252,6 +252,17 @@ class TestUpsert(unittest.TestCase):
         r = dict(zip(t[0], t[1]))
         self.assertEqual((r["投稿日時"], r["再生数"], r["メディアID"], r["メモ"]), ("2026-11-16 07:32", "173", "1789", "x"))
         self.assertEqual(m.migrate_values([], m.IG_HEADER), [m.IG_HEADER])
+        # A1 を手で消しても、2行目が見出しなら新しい形のまま
+        self.assertTrue(m.is_new_layout([["", ""], m.IG_HEADER]))
+        # 投稿URL の無い知らない表は組み替えない
+        with self.assertRaises(ValueError):
+            m.migrate_values([["a", "b"], ["1", "2"]], m.IG_HEADER)
+
+    def test_safe_cell(self):
+        self.assertEqual(m.safe_cell("=HYPERLINK(1)"), "'=HYPERLINK(1)")
+        self.assertEqual(m.safe_cell("+81"), "'+81")
+        self.assertEqual(m.safe_cell("2026-11-16 07:32"), "2026-11-16 07:32")
+        self.assertEqual(m.safe_cell(173), 173)
 
     def test_col_letter(self):
         self.assertEqual(m.col_letter(1), "A")

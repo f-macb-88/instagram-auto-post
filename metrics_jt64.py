@@ -567,7 +567,7 @@ def plan_upsert(existing_values, header, rows, first_row=2):
         existing[k] = n
 
     def to_list(row):
-        return [row.get(h, "") for h in use_header]
+        return [safe_cell(row.get(h, "")) for h in use_header]
 
     updates, appends, seen = {}, [], set()
     for row in rows:
@@ -603,7 +603,17 @@ def ensure_tab(sh, title, header):
 
 
 def is_new_layout(values):
-    return bool(values) and bool(values[0]) and norm_header(values[0][0]) == BANNER_LABEL
+    """新しい形か。1行目 A 列が「取得日時」、または2行目が見出し（投稿URL を含む）なら新しい形とみなす（A1 を手で触っても組み替えない）"""
+    if values and values[0] and norm_header(values[0][0]) == BANNER_LABEL:
+        return True
+    return len(values) >= 2 and URL_COL in [norm_header(h) for h in values[1]]
+
+
+def safe_cell(v):
+    """「=」「+」「@」で始まる文字は数式として読まれないよう先頭に ' を付ける（USER_ENTERED で書くため）"""
+    if isinstance(v, str) and v[:1] in ("=", "+", "@"):
+        return "'" + v
+    return v
 
 
 def migrate_values(values, header):
@@ -612,13 +622,15 @@ def migrate_values(values, header):
     if not values or not any(str(c).strip() for c in values[0]):
         return [list(header)]
     old = [norm_header(h) for h in values[0]]
+    if URL_COL not in old:  # 知らない表は組み替えない（消さないために止める）
+        raise ValueError(f"1行目に「{URL_COL}」が無いので、前の形の実績タブとは判断できません。組み替えずに止めます")
     new_header = list(header) + [h for h in old if h and h not in header and h not in OLD_ONLY_COLS]
     out = [new_header]
     for r in values[1:]:
         if not any(str(c).strip() for c in r):
             continue
         d = {h: (r[i] if i < len(r) else "") for i, h in enumerate(old)}
-        out.append([d.get(h, "") for h in new_header])
+        out.append([safe_cell(d.get(h, "")) for h in new_header])
     return out
 
 
@@ -639,12 +651,15 @@ def write_rows(sh, title, header, rows, now):
     if not is_new_layout(values):
         # 前の形（または空のタブ）→ 新しい形に組み替えて丸ごと書き直す（値は見出し名で移す）
         table = migrate_values(values, header)
-        width = max(len(table[0]), 2)
+        # 消してから書くと、途中で失敗したときに表が空になる。消さずに上から書き、余った所は空欄で上書きする
+        width = max(len(table[0]), 2, max((len(r) for r in values), default=0))
+        height = max(len(table) + 1, len(values))
+        grid = banner + table
+        grid = [r + [""] * (width - len(r)) for r in grid] + [[""] * width for _ in range(height - len(grid))]
         if ws.col_count < width:
             ws.add_cols(width - ws.col_count)
-        ws.clear()
-        ws.update(range_name="A1", values=banner + [r + [""] * (width - len(r)) for r in table], value_input_option="USER_ENTERED")
-        format_tab(ws, table[0], col_letter(width))
+        ws.update(range_name="A1", values=grid, value_input_option="USER_ENTERED")
+        format_tab(ws, table[0], col_letter(len(table[0])))
         log(f"「{title}」: 新しい形（1行目＝取得日時・2行目＝見出し・A列＝投稿日時）に組み替えました（{len(table) - 1} 投稿）")
         values = ws.get_all_values()
     body = values[HEADER_ROW - 1:]
