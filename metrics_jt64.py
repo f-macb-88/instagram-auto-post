@@ -617,7 +617,7 @@ def safe_cell(v):
     if not isinstance(v, str):
         return v  # API から取った数値はそのまま
     h = v.lstrip(" \t\r\n\u3000")
-    if h[:1] in ("=", "+", "@", "|") or (h[:1] == "-" and not h[1:2].isdigit()):
+    if h[:1] in ("=", "+", "@", "|", "-") and not re.fullmatch(r"-?\d+(\.\d+)?", h):
         return "'" + v
     return v
 
