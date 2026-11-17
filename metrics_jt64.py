@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """ジョブタイプ64のオーガニック投稿（TikTok・インスタ @jobtype64）の実績を毎日スプレッドシートに記録する。
 
-1行＝1投稿（2026-11-16 渕山さん指示）。毎日その行を最新の値で上書きし、同じ投稿の古い行は消す。
-「取得日」「取得時刻」は最後に値を取った日時。日ごとの推移は残さない。
+1行＝1投稿（2026-11-16 渕山さん指示）。毎日その行を最新の値で上書きし、同じ投稿の古い行は消す。日ごとの推移は残さない。
+タブの形（2026-11-17 渕山さん指示）：1行目＝「取得日時」と最後に値を取った日時／2行目＝見出し（A列＝投稿日時）／3行目から1投稿1行。
+前の形（1行目が見出しで、各行に「取得日」「取得時刻」）のタブは、次に書くとき一度だけ見出し名で値を移して組み替える。
 
   TikTok  → タブ「TikTok実績」
     ・再生数／いいね／コメント／シェア／保存 … 公開ページ（yt-dlp・ログイン不要）
@@ -60,21 +61,23 @@ SRC_BUFFER_ID = "BufferID"
 
 # ---- 記録タブの見出し（この並びで作る。既にあるタブは見出し名で列を探す）
 TT_HEADER = [
-    "取得日", "取得時刻", "動画ファイル名", "投稿URL", "動画ID", "投稿日時", "経過日数",
+    "投稿日時", "動画ファイル名", "投稿URL", "動画ID", "経過日数",
     "再生数", "いいね", "コメント", "シェア", "保存",
     "平均視聴時間_秒", "合計視聴時間_分", "リーチ", "Buffer指標の更新日時",
     "取得元", "取得状況",
 ]
 IG_HEADER = [
-    "取得日", "取得時刻", "動画ファイル名", "投稿URL", "メディアID", "投稿日時", "経過日数",
+    "投稿日時", "動画ファイル名", "投稿URL", "メディアID", "経過日数",
     "再生数", "リーチ", "いいね", "コメント", "保存", "シェア", "リポスト", "合計インタラクション",
     "平均視聴時間_秒", "合計視聴時間_秒", "取得状況",
 ]
 # 同じ投稿かどうかは ID（TikTok は動画ID・インスタはメディアID）で見る。ID が空なら投稿URLで見る
 ID_COLS = ("動画ID", "メディアID")
 URL_COL = "投稿URL"
-DATE_COLS = {"取得日": "yyyy-mm-dd", "取得時刻": "yyyy-mm-dd hh:mm", "投稿日時": "yyyy-mm-dd hh:mm",
-             "Buffer指標の更新日時": "yyyy-mm-dd hh:mm"}
+DATE_COLS = {"投稿日時": "yyyy-mm-dd hh:mm", "Buffer指標の更新日時": "yyyy-mm-dd hh:mm"}
+BANNER_LABEL = "取得日時"  # 1行目の A 列。B 列に最後に値を取った日時
+HEADER_ROW = 2             # 見出しの行（その下から1投稿1行）
+OLD_ONLY_COLS = ("取得日", "取得時刻")  # 前の形にだけある列（組み替えのときに落とす）
 
 # Instagram のリールで取る指標（2026-11 時点の現行名。plays・video_views・impressions は廃止済み）
 IG_METRICS = [
@@ -295,8 +298,6 @@ def fetch_ig_insights(media_id, token, metrics=IG_METRICS):
 def build_ig_row(media, insights, failed, video_name, now):
     posted = parse_iso(media.get("timestamp"))
     row = {
-        "取得日": now.strftime("%Y-%m-%d"),
-        "取得時刻": fmt_dt(now),
         "動画ファイル名": video_name,
         "投稿URL": canonical_ig_url(media.get("permalink")),
         "メディアID": str(media.get("id", "")),
@@ -444,8 +445,6 @@ def build_tiktok_row(url, video_name, info, buffer_post, buffer_note, now):
         posted = parse_iso(buffer_post.get("sentAt"))
     vid = str(info.get("id") or tiktok_video_id(url))
     row = {
-        "取得日": now.strftime("%Y-%m-%d"),
-        "取得時刻": fmt_dt(now),
         "動画ファイル名": video_name,
         "投稿URL": url,
         "動画ID": vid,
@@ -534,10 +533,11 @@ def collect_tiktok(source_rows, now, env=os.environ):
 
 # ---- シートへの書き込み ------------------------------------------------------------
 
-def plan_upsert(existing_values, header, rows):
+def plan_upsert(existing_values, header, rows, first_row=2):
     """既存のセル（get_all_values）と新しい行から、上書きする行・追記する行・消す行を決める。1投稿＝1行。
     同じ投稿の行が既に何行もあるときは、いちばん下（いちばん新しい）の1行を残して最新の値で上書きし、上の古い行は消す。
     今回取れなかった投稿の行は触らない（前回の値のまま残す）。
+    existing_values は [見出し, 1投稿目, …]。first_row は1投稿目のシートの行番号（見出しが2行目なら3）。
     戻り値: (使う見出し, {シートの行番号: 値のリスト}, [追記する値のリスト], 見出しを書き直すか, [消す行番号])"""
     cur_header = [norm_header(h) for h in (existing_values[0] if existing_values else [])]
     rewrite_header = not any(cur_header)
@@ -555,7 +555,7 @@ def plan_upsert(existing_values, header, rows):
         return post_key(get(id_col) if id_col else "", get(URL_COL))
 
     existing, dup_rows = {}, []
-    for n, r in enumerate(existing_values[1:] if existing_values else [], start=2):
+    for n, r in enumerate(existing_values[1:] if existing_values else [], start=first_row):
         r = list(r) + [""] * (len(use_header) - len(r))
         if not any(str(c).strip() for c in r):
             continue
@@ -602,22 +602,60 @@ def ensure_tab(sh, title, header):
         return ws, True
 
 
-def write_rows(sh, title, header, rows):
+def is_new_layout(values):
+    return bool(values) and bool(values[0]) and norm_header(values[0][0]) == BANNER_LABEL
+
+
+def migrate_values(values, header):
+    """前の形（1行目が見出し・各行に取得日／取得時刻）のセルを、新しい形の [見出し, 1投稿目, …] に組み替える。
+    値は見出し名で移す。前の形にだけある列（取得日・取得時刻）は落とし、知らない列は右端に残す。"""
+    if not values or not any(str(c).strip() for c in values[0]):
+        return [list(header)]
+    old = [norm_header(h) for h in values[0]]
+    new_header = list(header) + [h for h in old if h and h not in header and h not in OLD_ONLY_COLS]
+    out = [new_header]
+    for r in values[1:]:
+        if not any(str(c).strip() for c in r):
+            continue
+        d = {h: (r[i] if i < len(r) else "") for i, h in enumerate(old)}
+        out.append([d.get(h, "") for h in new_header])
+    return out
+
+
+def format_tab(ws, use_header, last):
+    ws.freeze(rows=HEADER_ROW)
+    ws.format(f"A1:{last}{HEADER_ROW}", {"textFormat": {"bold": True}})
+    ws.format("B1", {"numberFormat": {"type": "DATE_TIME", "pattern": "yyyy-mm-dd hh:mm"}})
+    for col, pattern in DATE_COLS.items():
+        if col in use_header:
+            c = col_letter(use_header.index(col) + 1)
+            ws.format(f"{c}{HEADER_ROW + 1}:{c}", {"numberFormat": {"type": "DATE_TIME", "pattern": pattern}})
+
+
+def write_rows(sh, title, header, rows, now):
     ws, created = ensure_tab(sh, title, header)
     values = ws.get_all_values()
-    use_header, updates, appends, rewrite_header, deletes = plan_upsert(values, header, rows)
+    banner = [[BANNER_LABEL, fmt_dt(now)]]
+    if not is_new_layout(values):
+        # 前の形（または空のタブ）→ 新しい形に組み替えて丸ごと書き直す（値は見出し名で移す）
+        table = migrate_values(values, header)
+        width = max(len(table[0]), 2)
+        if ws.col_count < width:
+            ws.add_cols(width - ws.col_count)
+        ws.clear()
+        ws.update(range_name="A1", values=banner + [r + [""] * (width - len(r)) for r in table], value_input_option="USER_ENTERED")
+        format_tab(ws, table[0], col_letter(width))
+        log(f"「{title}」: 新しい形（1行目＝取得日時・2行目＝見出し・A列＝投稿日時）に組み替えました（{len(table) - 1} 投稿）")
+        values = ws.get_all_values()
+    body = values[HEADER_ROW - 1:]
+    use_header, updates, appends, rewrite_header, deletes = plan_upsert(body, header, rows, first_row=HEADER_ROW + 1)
     last = col_letter(len(use_header))
     if ws.col_count < len(use_header):
         ws.add_cols(len(use_header) - ws.col_count)
+    ws.update(range_name="A1:B1", values=banner, value_input_option="USER_ENTERED")
     if rewrite_header:
-        ws.update(range_name=f"A1:{last}1", values=[use_header], value_input_option="RAW")
-    if created or rewrite_header:
-        ws.freeze(rows=1)
-        ws.format(f"A1:{last}1", {"textFormat": {"bold": True}})
-        for col, pattern in DATE_COLS.items():
-            if col in use_header:
-                c = col_letter(use_header.index(col) + 1)
-                ws.format(f"{c}2:{c}", {"numberFormat": {"type": "DATE_TIME", "pattern": pattern}})
+        ws.update(range_name=f"A{HEADER_ROW}:{last}{HEADER_ROW}", values=[use_header], value_input_option="RAW")
+        format_tab(ws, use_header, last)
     if updates:
         ws.batch_update(
             [{"range": f"A{n}:{last}{n}", "values": [v]} for n, v in sorted(updates.items())],
@@ -628,7 +666,7 @@ def write_rows(sh, title, header, rows):
         for start, end in reversed(group_runs(deletes)):
             ws.delete_rows(start, end)
     if appends:
-        ws.append_rows(appends, value_input_option="USER_ENTERED", table_range="A1")
+        ws.append_rows(appends, value_input_option="USER_ENTERED", table_range=f"A{HEADER_ROW}")
     log(f"「{title}」: 上書き {len(updates)} 行・追記 {len(appends)} 行・同じ投稿の古い行を削除 {len(deletes)} 行")
 
 
@@ -724,7 +762,7 @@ def main(argv=None):
             else:
                 if not rows:
                     log("TikTok: 記録する投稿がまだありません（タブと見出しだけ用意します）")
-                write_rows(sh, TAB_TIKTOK, TT_HEADER, rows)
+                write_rows(sh, TAB_TIKTOK, TT_HEADER, rows, now)
         except Exception as e:
             failed = True
             log(f"TikTok の記録に失敗: {redact(e)}")
@@ -736,7 +774,7 @@ def main(argv=None):
             elif args.dry_run:
                 print_rows(TAB_IG, rows)
             elif rows:
-                write_rows(sh, TAB_IG, IG_HEADER, rows)
+                write_rows(sh, TAB_IG, IG_HEADER, rows, now)
         except Exception as e:
             failed = True
             log(f"インスタの記録に失敗: {redact(e)}")

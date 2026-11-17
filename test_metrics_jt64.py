@@ -163,7 +163,7 @@ class TestUpsert(unittest.TestCase):
 
     def row(self, date, url, vid="", views=""):
         r = [""] * len(m.TT_HEADER)
-        r[m.TT_HEADER.index("取得日")] = date
+        r[m.TT_HEADER.index("投稿日時")] = date
         r[m.TT_HEADER.index("投稿URL")] = url
         r[m.TT_HEADER.index("動画ID")] = vid
         r[m.TT_HEADER.index("再生数")] = views
@@ -221,11 +221,37 @@ class TestUpsert(unittest.TestCase):
         self.assertEqual(m.group_runs([9, 3, 4, 5]), [(3, 5), (9, 9)])
 
     def test_missing_header_appended_at_end(self):
-        existing = [["取得日", "投稿URL", "再生数"]]
+        existing = [["投稿日時", "投稿URL", "再生数"]]
         header, _, _, rewrite, _ = m.plan_upsert(existing, m.TT_HEADER, [])
         self.assertTrue(rewrite)
-        self.assertEqual(header[:3], ["取得日", "投稿URL", "再生数"])
+        self.assertEqual(header[:3], ["投稿日時", "投稿URL", "再生数"])
         self.assertEqual(len(header), len(m.TT_HEADER))
+
+    def test_first_row_offset(self):
+        # 新しい形：1行目＝取得日時・2行目＝見出し → 1投稿目はシートの3行目
+        u1 = "https://tiktok.com/@a/video/111"
+        existing = [m.TT_HEADER, self.row("", u1, "111", 1), self.row("", u1, "111", 2)]
+        rows = [{"投稿URL": u1, "動画ID": "111", "再生数": 3}]
+        _, upd, app, _, dels = m.plan_upsert(existing, m.TT_HEADER, rows, first_row=3)
+        self.assertEqual((list(upd), app, dels), ([4], [], [3]))
+
+    def test_layout_and_migrate(self):
+        self.assertTrue(m.is_new_layout([["取得日時", "2026-11-17 12:49"], m.IG_HEADER]))
+        self.assertFalse(m.is_new_layout([["取得日", "取得時刻", "動画ファイル名"]]))
+        self.assertFalse(m.is_new_layout([]))
+        old_h = ["取得日", "取得時刻", "動画ファイル名", "投稿URL", "メディアID", "投稿日時", "経過日数", "再生数", "メモ"]
+        old = [old_h, ["2026-11-17", "2026-11-17 12:49", "a.mp4", "https://www.instagram.com/reel/AAA/", "1789", "2026-11-16 07:32", "1.2", "173", "x"],
+               [""] * 9]
+        t = m.migrate_values(old, m.IG_HEADER)
+        self.assertEqual(t[0][:len(m.IG_HEADER)], m.IG_HEADER)
+        self.assertEqual(t[0][0], "投稿日時")
+        self.assertNotIn("取得日", t[0])
+        self.assertNotIn("取得時刻", t[0])
+        self.assertEqual(t[0][-1], "メモ")  # 知らない列は右端に残す
+        self.assertEqual(len(t), 2)        # 空の行は落とす
+        r = dict(zip(t[0], t[1]))
+        self.assertEqual((r["投稿日時"], r["再生数"], r["メディアID"], r["メモ"]), ("2026-11-16 07:32", "173", "1789", "x"))
+        self.assertEqual(m.migrate_values([], m.IG_HEADER), [m.IG_HEADER])
 
     def test_col_letter(self):
         self.assertEqual(m.col_letter(1), "A")
