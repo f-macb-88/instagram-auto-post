@@ -49,7 +49,8 @@ JST = timezone(timedelta(hours=9))
 GRAPH = "https://graph.facebook.com/v25.0"  # v25.0 は 2028-07-29 まで使える
 BUFFER_API = "https://api.buffer.com"
 
-SOURCE_TAB = "投稿管理"  # 読むだけ
+SOURCE_TAB = "投稿管理"  # 読むだけ（2026-11-21 以前の名前。今は下の2つに分かれている）
+SOURCE_TABS = ("投稿予定", "投稿済み")  # 2026-11-21〜：これから投稿する行／投稿が済んだ行。どちらも読むだけ
 TAB_TIKTOK = "TikTok実績"
 TAB_IG = "インスタ実績"
 
@@ -771,8 +772,12 @@ def main(argv=None):
         return 0
 
     sh = open_sheet()
-    source_rows = read_source_rows(sh.worksheet(SOURCE_TAB).get_all_values())  # 読むだけ
-    log(f"投稿管理: 動画 {len(source_rows)} 行")
+    titles = [w.title for w in sh.worksheets()]
+    tabs = [t for t in SOURCE_TABS if t in titles] or [SOURCE_TAB]  # 分ける前のシートなら「投稿管理」
+    source_rows = []
+    for t in tabs:
+        source_rows += read_source_rows(sh.worksheet(t).get_all_values())  # 読むだけ
+    log(f"{'・'.join(tabs)}: 動画 {len(source_rows)} 行")
 
     failed = False
     if args.only in (None, "tiktok"):
