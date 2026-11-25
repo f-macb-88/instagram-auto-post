@@ -1,0 +1,39 @@
+name: IG Discover (competitor public posts)
+
+# 競合アカウントの公開投稿（いいね・コメント・本文・表紙）を、ジョブタイプ64のインスタの鍵で取る。手で動かすときだけ。2026-11-26
+# 投稿・シートには触らない。結果は成果物（artifact）discover-out に入る
+on:
+  workflow_dispatch:
+    inputs:
+      users:
+        description: "ユーザー名（空白区切り）"
+        default: "maresen_okane jin_mind_note fukabori_kun majimekun10"
+      limit:
+        description: "1アカウントあたりの最大件数"
+        default: "100"
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Discover
+        # 入力値はコマンドに直接埋め込まず、環境変数で渡す
+        run: |
+          read -r -a U <<< "$IN_USERS"
+          python ig_discover.py "${U[@]}" --limit "$IN_LIMIT"
+        env:
+          IN_USERS: ${{ inputs.users }}
+          IN_LIMIT: ${{ inputs.limit }}
+          IG_USER_ID_JOBTYPE64: ${{ secrets.IG_USER_ID_JOBTYPE64 }}
+          IG_ACCESS_TOKEN_JOBTYPE64: ${{ secrets.IG_ACCESS_TOKEN_JOBTYPE64 }}
+      - uses: actions/upload-artifact@v5
+        with:
+          name: discover-out
+          path: discover_out/
+          retention-days: 7
